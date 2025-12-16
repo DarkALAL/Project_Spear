@@ -1,0 +1,204 @@
+/* client/src/App.css */
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.App {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  text-align: left;
+  background-color: #1e1e1e;
+}
+
+.App-header {
+  background-color: #3c3c3c;
+  padding: 10px 20px;
+  color: white;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.App-header h1 {
+  margin: 0;
+  font-size: 1.5em;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+}
+
+.controls button {
+  background-color: #0e639c;
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.controls button:hover {
+  background-color: #1177bb;
+}
+
+.browse-button {
+  background-color: #5a5a5a;
+  color: white;
+  padding: 8px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.file-name {
+  color: #ccc;
+  margin: 0 20px 0 10px;
+}
+
+.loader {
+  margin-left: 20px;
+  font-style: italic;
+}
+
+.main-content {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  overflow: hidden;
+}
+
+.file-tree {
+  flex-shrink: 0;
+  width: 250px;
+  background-color: #252526;
+  padding: 10px;
+  overflow-y: auto;
+  color: #ccc;
+  border-right: 1px solid #000;
+}
+
+.file-tree h3 {
+  margin-top: 0;
+  color: white;
+}
+
+.file-tree ul {
+  list-style: none;
+  padding: 0;
+}
+
+.file-tree li {
+  padding: 5px;
+  cursor: pointer;
+  border-radius: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-tree li:hover {
+  background-color: #37373d;
+}
+
+.file-tree li.selected {
+  background-color: #007acc;
+  color: white;
+}
+
+/***************************************/
+/* --- FIXED: Monaco Editor Container --- */
+/***************************************/
+.editor-container {
+  flex: 1;
+  position: relative;
+  background-color: #1e1e1e;
+  min-width: 400px; /* Ensure minimum width */
+}
+
+.placeholder {
+  flex-grow: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #888;
+  font-size: 1.2em;
+}
+
+.issues-panel {
+  flex-shrink: 0;
+  width: 500px;
+  background-color: #252526;
+  padding: 10px;
+  overflow-y: auto;
+  border-left: 1px solid #000;
+  color: #ccc;
+}
+
+.issues-panel h3 {
+  margin-top: 0;
+  color: white;
+  border-bottom: 1px solid #3c3c3c;
+  padding-bottom: 10px;
+}
+
+.issues-panel .no-issues {
+  color: #888;
+  padding: 10px;
+}
+
+.issues-panel ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.issues-panel li {
+  cursor: pointer;
+  padding: 10px;
+  border-bottom: 1px solid #3c3c3c;
+}
+
+.issues-panel li:hover {
+  background-color: #37373d;
+}
+
+.issues-panel .issue-message {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.issues-panel .issue-message p {
+  margin: 0;
+  line-height: 1.4;
+  flex-grow: 1;
+}
+
+.issues-panel .issue-message span {
+  font-weight: bold;
+  flex-shrink: 0;
+  width: 70px;
+}
+
+.issues-panel .issue-location {
+  font-size: 0.85em;
+  color: #888;
+  text-align: right;
+}
+
+.issues-panel .issue-error span {
+  color: #f48771;
+}
+
+.issues-panel .issue-warning span {
+  color: #ffd700;
+}
