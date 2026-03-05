@@ -1,6 +1,8 @@
-server/project_uploads
+server/temp_uploads
 ./client/node_modules
 server/node_modules
 server/models
 server/.env
 client/.env
+server/project_uploads
+server/models/

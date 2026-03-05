@@ -123,16 +123,13 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
   // ── Mount handler ──
   // Fires once when Monaco finishes initializing.
   // Store refs so effects below can access the editor instance.
+  // NOTE: We no longer call applyDiagnostics here — the combined effect
+  // below handles both the initial application and file-switch re-apply.
   const handleEditorDidMount: OnMount = useCallback(
     (editorInstance, monacoInstance) => {
       editorRef.current = editorInstance;
       monacoRef.current = monacoInstance;
-
-      // Apply any diagnostics that arrived before the editor mounted
-      applyDiagnostics(editorInstance, monacoInstance, diagnostics);
     },
-    // diagnostics intentionally omitted — handled by separate effect below
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     []
   );
 
@@ -167,27 +164,38 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
   );
 
   // ─────────────────────────────────────────
-  // EFFECT: update squiggle markers when diagnostics change
+  // FIX: Single combined effect for filePath + diagnostics
+  //
+  // PROBLEM with the original two-effect approach:
+  //   Effect A (dep: [diagnostics]) → applies markers when diags change
+  //   Effect B (dep: [filePath])    → clears markers on file switch
+  //
+  //   When the user clicks a different file, only filePath changes.
+  //   Effect B fires and wipes the markers. diagnostics didn't change,
+  //   so Effect A never fires → squiggles are cleared, never restored.
+  //
+  // FIX: One effect that depends on BOTH [filePath, diagnostics].
+  //   requestAnimationFrame defers by one paint frame so Monaco has
+  //   time to swap its internal ITextModel (triggered by the `path`
+  //   prop on <Editor>) before we call setModelMarkers on it.
+  //   Without the rAF, getModel() returns the OLD model and markers
+  //   land on the wrong buffer.
   // ─────────────────────────────────────────
 
   useEffect(() => {
     if (!editorRef.current || !monacoRef.current) return;
-    applyDiagnostics(editorRef.current, monacoRef.current, diagnostics);
-  }, [diagnostics, applyDiagnostics]);
 
-  // ─────────────────────────────────────────
-  // EFFECT: clear markers when file changes
-  // ─────────────────────────────────────────
-  // When the user switches to a different file, clear any stale markers
-  // from the previous model before the new diagnostics arrive
+    const frameId = requestAnimationFrame(() => {
+      if (!editorRef.current || !monacoRef.current) return;
+      applyDiagnostics(editorRef.current, monacoRef.current, diagnostics);
+    });
 
-  useEffect(() => {
-    if (!editorRef.current || !monacoRef.current) return;
-    const model = editorRef.current.getModel();
-    if (!model) return;
-    // Clear existing markers for our owner on file switch
-    monacoRef.current.editor.setModelMarkers(model, 'project-spear', []);
-  }, [filePath]);
+    return () => cancelAnimationFrame(frameId);
+
+    // filePath is intentionally included: when the user switches files the
+    // `path` prop on <Editor> changes, Monaco swaps its model, and we must
+    // re-apply the already-filtered diagnostics onto the new model.
+  }, [diagnostics, filePath, applyDiagnostics]);
 
   // ─────────────────────────────────────────
   // EFFECT: navigate to line when issue is clicked

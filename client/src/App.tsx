@@ -1,5 +1,5 @@
 // client/src/App.tsx
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import './App.css';
 import CodeEditor from './components/CodeEditor';
 import IssuesPanel from './components/IssuesPanel';
@@ -43,7 +43,7 @@ function App() {
   const [fileContent,  setFileContent]  = useState<string>('');
 
   // Cache of all fetched file contents — passed to DependencyGraph
-  // so it can parse imports and draw edges between files
+  // so it can parse imports and draw edges between files.
   const [fileContents, setFileContents] = useState<Record<string, string>>({});
 
   // ── Analysis State ──
@@ -59,6 +59,9 @@ function App() {
   const [isModalOpen,   setIsModalOpen]   = useState(false);
   const [aiExplanation, setAiExplanation] = useState('');
   const [isAIThinking,  setIsAIThinking]  = useState(false);
+
+  // Track if we're currently prefetching (prevents duplicate fetches)
+  const isPrefetchingRef = useRef(false);
 
   // ─────────────────────────────────────────
   // HELPERS
@@ -101,6 +104,7 @@ function App() {
     setDiagnostics([]);
     setNavigateTo(null);
     setActiveTab('editor');
+    isPrefetchingRef.current = false;
 
     const formData = new FormData();
     formData.append('project', file);
@@ -175,6 +179,77 @@ function App() {
   );
 
   /**
+   * prefetchAllFiles()
+   *
+   * Silently fetches every file in the project that isn't already cached.
+   * Called when the user switches to the Dependencies tab so the graph
+   * has content to parse #include / import edges from.
+   *
+   * KEY FIX: Without this, fileContents only has entries for files the
+   * user manually clicked — all others have undefined content and
+   * parseDependencies() returns [], giving 0 edges in the graph.
+   *
+   * Runs all fetches in parallel (Promise.all) and stores results in a
+   * single setFileContents call to avoid multiple re-renders.
+   * Does NOT set the global isLoading flag so the editor stays usable.
+   */
+  const prefetchAllFiles = useCallback(
+    async (currentProjectId: string, allFiles: string[], cached: Record<string, string>) => {
+      if (isPrefetchingRef.current) return;
+      isPrefetchingRef.current = true;
+
+      const unfetched = allFiles.filter((f) => !cached[f]);
+      if (unfetched.length === 0) {
+        isPrefetchingRef.current = false;
+        return;
+      }
+
+      console.log(`[DependencyGraph] Prefetching ${unfetched.length} file(s) for edge parsing...`);
+
+      const results = await Promise.all(
+        unfetched.map(async (file) => {
+          try {
+            const response = await fetch(
+              `${API_BASE}/api/project/${currentProjectId}/file?path=${encodeURIComponent(file)}`
+            );
+            if (!response.ok) return null;
+            const content = await response.text();
+            return { file, content };
+          } catch {
+            return null;
+          }
+        })
+      );
+
+      // Merge all fetched content into state in one update
+      const newEntries: Record<string, string> = {};
+      for (const result of results) {
+        if (result) newEntries[result.file] = result.content;
+      }
+
+      setFileContents((prev) => ({ ...prev, ...newEntries }));
+      console.log(`[DependencyGraph] Prefetch complete. ${Object.keys(newEntries).length} file(s) loaded.`);
+      isPrefetchingRef.current = false;
+    },
+    []
+  );
+
+  /**
+   * handleTabChange()
+   * Switches tabs and triggers file prefetch when switching to Dependencies.
+   */
+  const handleTabChange = useCallback(
+    (tab: AppTab) => {
+      setActiveTab(tab);
+      if (tab === 'dependencies' && projectId) {
+        // Prefetch in background — doesn't block or show a loader
+        prefetchAllFiles(projectId, files, fileContents);
+      }
+    },
+    [projectId, files, fileContents, prefetchAllFiles]
+  );
+
+  /**
    * handleAnalyze()
    * Triggers static analysis on the entire project.
    */
@@ -217,14 +292,14 @@ function App() {
   /**
    * handleIssueClick()
    * Navigates to the file and line of a clicked diagnostic.
-   * Awaits file loading before setting navigation target.
    */
   const handleIssueClick = async (issue: Diagnostic) => {
-    // Switch file first if the issue is in a different file
+    if (activeTab !== 'editor') {
+      setActiveTab('editor');
+    }
     if (issue.filePath !== selectedFile) {
       await handleFileSelect(issue.filePath);
     }
-    // Small delay lets Monaco finish mounting before scrolling
     setTimeout(() => {
       setNavigateTo({ line: issue.line, column: issue.column });
     }, 100);
@@ -252,8 +327,6 @@ function App() {
       );
 
       const data = await response.json();
-
-      // Both 200 and 503 (AI unavailable) return { explanation }
       setAiExplanation(
         data.explanation || 'The AI did not return a response.'
       );
@@ -282,9 +355,8 @@ function App() {
     content: fileContents[f],
   }));
 
-  // ── KEY FIX: Only pass diagnostics for the current file to Monaco ──
-  // Without this filter, Monaco applies all 54 issues to whichever
-  // file is open, causing line number mismatches and missing squiggles
+  // Only pass the current file's diagnostics to Monaco —
+  // prevents cross-file line number mismatches
   const currentFileDiagnostics = diagnostics.filter(
     (d) => d.filePath === selectedFile
   );
@@ -303,14 +375,14 @@ function App() {
           <nav className="top-nav">
             <button
               className={`nav-button ${activeTab === 'editor' ? 'active' : ''}`}
-              onClick={() => setActiveTab('editor')}
+              onClick={() => handleTabChange('editor')}
               disabled={!projectId}
             >
               Editor
             </button>
             <button
               className={`nav-button ${activeTab === 'dependencies' ? 'active' : ''}`}
-              onClick={() => setActiveTab('dependencies')}
+              onClick={() => handleTabChange('dependencies')}
               disabled={!projectId}
             >
               Dependencies
@@ -439,13 +511,12 @@ function App() {
               <CodeEditor
                 filePath={selectedFile}
                 content={fileContent}
-                // ✅ Only the current file's diagnostics — no cross-file squiggles
                 diagnostics={currentFileDiagnostics}
                 navigateTo={navigateTo}
               />
             </div>
 
-            {/* Issues Panel — always shows all issues across all files */}
+            {/* Issues Panel */}
             <IssuesPanel
               diagnostics={diagnostics}
               onIssueClick={handleIssueClick}
