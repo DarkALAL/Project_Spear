@@ -12,22 +12,20 @@ import DependencyGraph from './components/DependencyGraph';
 
 export interface Diagnostic {
   filePath: string;
-  line: number;
-  column: number;
-  message: string;
+  line:     number;
+  column:   number;
+  message:  string;
   severity: 'error' | 'warning' | 'info';
-  source: string;
+  source:   string;
 }
 
 type NavigationTarget = { line: number; column: number };
-
-type AppTab = 'editor' | 'dependencies';
+type AppTab           = 'editor' | 'dependencies';
 
 // ─────────────────────────────────────────
 // CONFIG
 // ─────────────────────────────────────────
 
-// Reads from client/.env — falls back to localhost for local dev
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:3001';
 
 // ─────────────────────────────────────────
@@ -35,34 +33,32 @@ const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:3001';
 // ─────────────────────────────────────────
 
 function App() {
-  // --- Project State ---
-  const [projectId, setProjectId] = useState<string | null>(null);
-  const [files, setFiles] = useState<string[]>([]);
+  // ── Project State ──
+  const [projectId,        setProjectId]        = useState<string | null>(null);
+  const [files,            setFiles]            = useState<string[]>([]);
   const [uploadedFileName, setUploadedFileName] = useState<string>('');
 
-  // --- Editor State ---
+  // ── Editor State ──
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [fileContent, setFileContent] = useState<string>('');
+  const [fileContent,  setFileContent]  = useState<string>('');
 
   // Cache of all fetched file contents — passed to DependencyGraph
   // so it can parse imports and draw edges between files
   const [fileContents, setFileContents] = useState<Record<string, string>>({});
 
-  // --- Analysis State ---
+  // ── Analysis State ──
   const [diagnostics, setDiagnostics] = useState<Diagnostic[]>([]);
 
-  // --- UI State ---
-  const [isLoading, setIsLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<AppTab>('editor');
-  const [navigateTo, setNavigateTo] = useState<NavigationTarget | null>(null);
-
-  // Error banner state — shown at top of UI if a fetch fails
+  // ── UI State ──
+  const [isLoading,    setIsLoading]    = useState(false);
+  const [activeTab,    setActiveTab]    = useState<AppTab>('editor');
+  const [navigateTo,   setNavigateTo]   = useState<NavigationTarget | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // --- AI Modal State ---
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  // ── AI Modal State ──
+  const [isModalOpen,   setIsModalOpen]   = useState(false);
   const [aiExplanation, setAiExplanation] = useState('');
-  const [isAIThinking, setIsAIThinking] = useState(false);
+  const [isAIThinking,  setIsAIThinking]  = useState(false);
 
   // ─────────────────────────────────────────
   // HELPERS
@@ -70,7 +66,6 @@ function App() {
 
   const showError = (msg: string) => {
     setErrorMessage(msg);
-    // Auto-dismiss after 6 seconds
     setTimeout(() => setErrorMessage(null), 6000);
   };
 
@@ -80,7 +75,7 @@ function App() {
 
   /**
    * handleFileUpload()
-   * Sends the zip to the server, stores the returned projectId and file list.
+   * Sends the zip to the server, stores projectId and file list.
    */
   const handleFileUpload = async (
     event: React.ChangeEvent<HTMLInputElement>
@@ -88,7 +83,6 @@ function App() {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    // Validate it's a zip before sending
     if (!file.name.endsWith('.zip')) {
       showError('Please upload a .zip file.');
       return;
@@ -114,7 +108,7 @@ function App() {
     try {
       const response = await fetch(`${API_BASE}/api/upload`, {
         method: 'POST',
-        body: formData,
+        body:   formData,
       });
 
       if (!response.ok) {
@@ -131,22 +125,20 @@ function App() {
       setUploadedFileName('');
     } finally {
       setIsLoading(false);
-      // Reset the input so the same file can be re-uploaded if needed
       event.target.value = '';
     }
   };
 
   /**
    * handleFileSelect()
-   * Fetches file content from the server and updates the editor.
-   * Also caches the content for the DependencyGraph.
-   * Returns a Promise so callers can await it before navigating.
+   * Fetches file content and updates editor.
+   * Checks cache first to avoid redundant network requests.
    */
   const handleFileSelect = useCallback(
     async (file: string): Promise<void> => {
       if (!projectId) return;
 
-      // If content is already cached, just switch to it without a fetch
+      // Serve from cache if available
       if (fileContents[file]) {
         setSelectedFile(file);
         setFileContent(fileContents[file]);
@@ -170,7 +162,7 @@ function App() {
         setFileContent(content);
         setNavigateTo(null);
 
-        // Cache the content — used by DependencyGraph to parse imports
+        // Cache for DependencyGraph edge parsing
         setFileContents((prev) => ({ ...prev, [file]: content }));
       } catch (error: any) {
         console.error('Failed to fetch file content:', error);
@@ -197,9 +189,9 @@ function App() {
       const response = await fetch(
         `${API_BASE}/api/project/${projectId}/analyze`,
         {
-          method: 'POST',
+          method:  'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ files }),
+          body:    JSON.stringify({ files }),
         }
       );
 
@@ -224,15 +216,15 @@ function App() {
 
   /**
    * handleIssueClick()
-   * Navigates the editor to the file and line of a clicked diagnostic.
-   * Awaits file loading before setting the navigation target.
+   * Navigates to the file and line of a clicked diagnostic.
+   * Awaits file loading before setting navigation target.
    */
   const handleIssueClick = async (issue: Diagnostic) => {
+    // Switch file first if the issue is in a different file
     if (issue.filePath !== selectedFile) {
       await handleFileSelect(issue.filePath);
     }
-    // Small delay lets Monaco finish mounting the new file content
-    // before we tell it to scroll to a line
+    // Small delay lets Monaco finish mounting before scrolling
     setTimeout(() => {
       setNavigateTo({ line: issue.line, column: issue.column });
     }, 100);
@@ -240,7 +232,7 @@ function App() {
 
   /**
    * handleAskAI()
-   * Opens the AI modal and fetches an explanation for a diagnostic.
+   * Opens AI modal and fetches explanation for a diagnostic.
    */
   const handleAskAI = async (diagnostic: Diagnostic) => {
     if (!projectId) return;
@@ -253,16 +245,15 @@ function App() {
       const response = await fetch(
         `${API_BASE}/api/project/${projectId}/explain`,
         {
-          method: 'POST',
+          method:  'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ diagnostic }),
+          body:    JSON.stringify({ diagnostic }),
         }
       );
 
       const data = await response.json();
 
-      // Both success (200) and graceful AI-unavailable (503) return
-      // an { explanation } field — show whatever the server sends
+      // Both 200 and 503 (AI unavailable) return { explanation }
       setAiExplanation(
         data.explanation || 'The AI did not return a response.'
       );
@@ -285,13 +276,15 @@ function App() {
   // DERIVED DATA
   // ─────────────────────────────────────────
 
-  // Files with cached content — passed to DependencyGraph for edge parsing
+  // Files with cached content — passed to DependencyGraph
   const filesWithContent = files.map((f) => ({
-    path: f,
+    path:    f,
     content: fileContents[f],
   }));
 
-  // Diagnostics for the currently open file — passed to Monaco for squiggles
+  // ── KEY FIX: Only pass diagnostics for the current file to Monaco ──
+  // Without this filter, Monaco applies all 54 issues to whichever
+  // file is open, causing line number mismatches and missing squiggles
   const currentFileDiagnostics = diagnostics.filter(
     (d) => d.filePath === selectedFile
   );
@@ -327,7 +320,6 @@ function App() {
 
         <div className="header-right">
           <div className="controls">
-            {/* Hidden file input — triggered by the label below */}
             <input
               type="file"
               id="file-upload"
@@ -382,7 +374,6 @@ function App() {
       {/* ── MAIN CONTENT ── */}
       <main className="main-content">
 
-        {/* Loading overlay */}
         {isLoading && (
           <div className="loader-overlay">
             <div className="loader-spinner" />
@@ -390,17 +381,21 @@ function App() {
           </div>
         )}
 
-        {/* No project uploaded yet */}
         {!projectId && !isLoading && (
           <div className="placeholder">
             <div className="placeholder-inner">
-              <p>📁 Upload a <strong>.zip</strong> file containing your C or Python project to begin.</p>
-              <p className="placeholder-sub">Supported file types: .c, .h, .py</p>
+              <p>
+                📁 Upload a <strong>.zip</strong> file containing your
+                C or Python project to begin.
+              </p>
+              <p className="placeholder-sub">
+                Supported file types: .c, .h, .py
+              </p>
             </div>
           </div>
         )}
 
-        {/* Project loaded — Editor tab */}
+        {/* Editor tab */}
         {projectId && activeTab === 'editor' && (
           <>
             {/* File Tree */}
@@ -423,7 +418,9 @@ function App() {
                       >
                         <span className="file-name-tree">{file}</span>
                         {issueCount > 0 && (
-                          <span className="file-issue-badge">{issueCount}</span>
+                          <span className="file-issue-badge">
+                            {issueCount}
+                          </span>
                         )}
                       </li>
                     );
@@ -442,12 +439,13 @@ function App() {
               <CodeEditor
                 filePath={selectedFile}
                 content={fileContent}
+                // ✅ Only the current file's diagnostics — no cross-file squiggles
                 diagnostics={currentFileDiagnostics}
                 navigateTo={navigateTo}
               />
             </div>
 
-            {/* Issues Panel */}
+            {/* Issues Panel — always shows all issues across all files */}
             <IssuesPanel
               diagnostics={diagnostics}
               onIssueClick={handleIssueClick}
@@ -456,7 +454,7 @@ function App() {
           </>
         )}
 
-        {/* Project loaded — Dependencies tab */}
+        {/* Dependencies tab */}
         {projectId && activeTab === 'dependencies' && (
           <div className="dependency-graph-wrapper">
             <DependencyGraph files={filesWithContent} />
