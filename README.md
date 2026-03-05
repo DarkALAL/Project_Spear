@@ -600,7 +600,7 @@ Get an AI explanation for a diagnostic.
 | **Amal Joe Sebi** | Static Analysis Pipeline, Linter Integration |
 | **Ananya M S** | UI/UX Design, React Components, CSS |
 
-**Project Guide:** Ms. Densy Jeevan
+**Project Guide:** Ms. Densy David E
 
 ---
 
