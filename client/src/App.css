@@ -5,12 +5,13 @@
 *::before,
 *::after {
   box-sizing: border-box;
+  margin: 0;
+  padding: 0;
 }
 
 html,
 body {
   height: 100%;
-  margin: 0;
   overflow-x: hidden;
 }
 
@@ -40,7 +41,7 @@ body {
    HEADER
    ========================= */
 .App-header {
-  height: 56px; /* IMPORTANT */
+  height: 56px;
   background: linear-gradient(90deg, #111214, #1b1d20);
   padding: 0 16px;
   color: white;
@@ -48,22 +49,29 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  border-bottom: 1px solid rgba(255,255,255,0.03);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
   flex-shrink: 0;
+  z-index: 10;
 }
 
 .header-left {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
 .App-header h1 {
   margin: 0;
-  font-size: 1.1rem;
-  font-weight: 600;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #e6eef6;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
 }
 
+/* =========================
+   TOP NAV TABS
+   ========================= */
 .top-nav {
   display: flex;
   gap: 4px;
@@ -71,20 +79,35 @@ body {
 
 .nav-button {
   background: transparent;
-  color: #cfd8df;
+  color: #8b9ba8;
   border: 1px solid transparent;
-  padding: 6px 12px;
+  padding: 5px 12px;
   border-radius: 6px;
   cursor: pointer;
   font-size: 13px;
   font-weight: 500;
+  transition: background 0.15s, color 0.15s;
+}
+
+.nav-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  color: #d4d4d4;
 }
 
 .nav-button.active {
   background: #0b66a3;
   color: white;
+  border-color: #0e7ec0;
 }
 
+.nav-button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* =========================
+   HEADER RIGHT CONTROLS
+   ========================= */
 .header-right {
   display: flex;
   align-items: center;
@@ -94,57 +117,200 @@ body {
 .controls {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 
 .controls button {
   background-color: #0e639c;
   color: white;
   border: none;
-  padding: 6px 12px;
+  padding: 6px 14px;
   border-radius: 5px;
   cursor: pointer;
   font-size: 12px;
+  font-weight: 500;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.controls button:hover:not(:disabled) {
+  background-color: #1177bb;
+}
+
+.controls button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .browse-button {
   background-color: #2d2f31;
   color: #d4d4d4;
-  padding: 6px 10px;
+  padding: 6px 12px;
   border-radius: 5px;
   cursor: pointer;
-  border: 1px solid rgba(255,255,255,0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
   font-size: 12px;
+  font-weight: 500;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.browse-button:hover {
+  background-color: #3a3d40;
+}
+
+.browse-button.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
 }
 
 .file-name {
   color: #9aa4ab;
   font-size: 12px;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status.ready {
   color: #7ac78a;
   font-size: 12px;
+  white-space: nowrap;
 }
 
 /* =========================
-   MAIN LAYOUT (CRITICAL)
+   ERROR BANNER
+   ========================= */
+.error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #3a1a1a;
+  border-bottom: 1px solid #6b2b2b;
+  color: #f48771;
+  padding: 8px 16px;
+  font-size: 13px;
+  flex-shrink: 0;
+  z-index: 9;
+  gap: 12px;
+}
+
+.error-dismiss {
+  background: transparent;
+  border: none;
+  color: #f48771;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.error-dismiss:hover {
+  color: #ff9e88;
+}
+
+/* =========================
+   MAIN LAYOUT
    ========================= */
 .main-content {
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr) 360px;
   flex: 1;
-  min-height: 0;      /* CRITICAL */
-  overflow: hidden;  /* PREVENT PAGE OVERFLOW */
+  min-height: 0;     /* CRITICAL — prevents grid from overflowing */
+  overflow: hidden;
+  position: relative;
 }
 
-/* Allow grid children to shrink */
+/* All direct grid children must allow shrinking */
 .file-tree,
 .editor-container,
-.issues-panel {
-  min-width: 0;   /* CRITICAL */
-  min-height: 0;  /* CRITICAL */
+.issues-panel,
+.dependency-graph-wrapper {
+  min-width: 0;
+  min-height: 0;
   overflow: auto;
+}
+
+/* =========================
+   LOADER OVERLAY
+   ========================= */
+.loader-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  color: #d4d4d4;
+  font-size: 13px;
+  gap: 12px;
+}
+
+.loader-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid rgba(255, 255, 255, 0.1);
+  border-top-color: #0e639c;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* =========================
+   PLACEHOLDER (no project)
+   ========================= */
+.placeholder {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #5a6470;
+}
+
+.placeholder-inner {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.placeholder-inner p {
+  font-size: 14px;
+  color: #6b7a87;
+  line-height: 1.6;
+}
+
+.placeholder-inner strong {
+  color: #9aa4ab;
+}
+
+.placeholder-sub {
+  font-size: 12px !important;
+  color: #4a5560 !important;
+}
+
+/* =========================
+   EDITOR PLACEHOLDER
+   ========================= */
+.editor-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #4a5560;
+  font-size: 13px;
+  pointer-events: none;
+  z-index: 1;
 }
 
 /* =========================
@@ -152,13 +318,18 @@ body {
    ========================= */
 .file-tree {
   background-color: #0f1113;
-  padding: 12px;
-  border-right: 1px solid rgba(255,255,255,0.03);
+  padding: 12px 8px;
+  border-right: 1px solid rgba(255, 255, 255, 0.05);
+  overflow-y: auto;
 }
 
 .file-tree h3 {
-  margin-top: 0;
-  color: #e6eef6;
+  margin: 0 0 10px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: #6b7a87;
 }
 
 .file-tree ul {
@@ -168,16 +339,20 @@ body {
 }
 
 .file-tree li {
-  padding: 8px 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
   cursor: pointer;
   border-radius: 4px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: 12px;
+  color: #c0cdd8;
+  gap: 6px;
+  transition: background 0.1s;
 }
 
 .file-tree li:hover {
-  background-color: #17181a;
+  background-color: rgba(255, 255, 255, 0.05);
 }
 
 .file-tree li.selected {
@@ -185,8 +360,28 @@ body {
   color: white;
 }
 
+.file-name-tree {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'Consolas', 'Courier New', monospace;
+}
+
+/* Issue count badge on file tree items */
+.file-issue-badge {
+  background: #6b2b2b;
+  color: #f48771;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 8px;
+  flex-shrink: 0;
+  line-height: 1.6;
+}
+
 /* =========================
-   EDITOR
+   EDITOR CONTAINER
    ========================= */
 .editor-container {
   background-color: #0f1113;
@@ -198,58 +393,263 @@ body {
    ========================= */
 .issues-panel {
   background-color: #0f1113;
-  padding: 12px;
-  border-left: 1px solid rgba(255,255,255,0.03);
+  border-left: 1px solid rgba(255, 255, 255, 0.05);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .issues-panel h3 {
-  margin-top: 0;
-  color: #e6eef6;
-  border-bottom: 1px solid rgba(255,255,255,0.03);
-  padding-bottom: 6px;
+  margin: 0;
+  padding: 12px 12px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: #6b7a87;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  flex-shrink: 0;
 }
 
 .issues-panel ul {
   list-style: none;
   padding: 0;
   margin: 0;
+  overflow-y: auto;
+  flex: 1;
 }
 
 .issues-panel li {
-  padding: 10px;
-  border-bottom: 1px solid rgba(255,255,255,0.03);
-  cursor: pointer;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  transition: background 0.1s;
 }
 
 .issues-panel li:hover {
-  background-color: #17181a;
+  background-color: rgba(255, 255, 255, 0.03);
+}
+
+/* Clickable part of each issue row */
+.issue-content {
+  flex: 1;
+  cursor: pointer;
+  min-width: 0;
 }
 
 .issue-message {
   display: flex;
-  gap: 10px;
+  gap: 8px;
+  align-items: flex-start;
+  margin-bottom: 4px;
 }
 
 .issue-message span {
-  font-weight: 600;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  margin-top: 1px;
+  line-height: 1.6;
 }
 
-.issue-warning span {
-  color: #ffd700;
+.issue-message p {
+  font-size: 12px;
+  color: #c0cdd8;
+  line-height: 1.5;
+  word-break: break-word;
+  margin: 0;
 }
 
-.issue-error span {
+/* Severity colour coding */
+.issue-error .issue-message span {
+  background: rgba(244, 135, 113, 0.15);
   color: #f48771;
 }
 
+.issue-warning .issue-message span {
+  background: rgba(255, 215, 0, 0.12);
+  color: #ffd700;
+}
+
+.issue-info .issue-message span {
+  background: rgba(100, 180, 255, 0.12);
+  color: #64b4ff;
+}
+
 .issue-location {
-  font-size: 0.85em;
-  color: #8b8f93;
+  font-size: 11px;
+  color: #5a6470;
+  font-family: 'Consolas', 'Courier New', monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Ask AI button */
+.ai-button {
+  background: transparent;
+  border: 1px solid #2a4d6e;
+  color: #6fa8d6;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  margin-top: 2px;
+  transition: background 0.15s, border-color 0.15s;
+  line-height: 1.5;
+}
+
+.ai-button:hover {
+  background: #0e3a5c;
+  border-color: #4a8fc0;
+  color: #9ecfef;
+}
+
+.no-issues {
+  color: #5a6470;
+  font-size: 13px;
+  padding: 16px 12px;
+  text-align: center;
+}
+
+/* =========================
+   AI EXPLANATION MODAL
+   ========================= */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  padding: 16px;
+}
+
+.modal-content {
+  background: #1e2124;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 8px;
+  padding: 0;
+  width: 640px;
+  max-width: 95vw;
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  flex-shrink: 0;
+}
+
+.modal-content h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #e6eef6;
+}
+
+.modal-close {
+  background: transparent;
+  border: none;
+  color: #6b7a87;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 4px;
+  transition: color 0.15s;
+}
+
+.modal-close:hover {
+  color: #d4d4d4;
+}
+
+.modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 18px;
+}
+
+.explanation-text {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 13px;
+  color: #d4d4d4;
+  line-height: 1.7;
+  margin: 0;
+}
+
+.modal-footer {
+  padding: 12px 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  display: flex;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
+.modal-footer button {
+  background: #0e639c;
+  color: white;
+  border: none;
+  padding: 7px 18px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 0.15s;
+}
+
+.modal-footer button:hover {
+  background: #1177bb;
+}
+
+/* AI loading state inside modal */
+.loader {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 32px 0;
+  color: #6b7a87;
+  font-size: 13px;
+}
+
+.loader::before {
+  content: '';
+  width: 24px;
+  height: 24px;
+  border: 3px solid rgba(255, 255, 255, 0.1);
+  border-top-color: #0e639c;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
 }
 
 /* =========================
    DEPENDENCY GRAPH
    ========================= */
+.dependency-graph-wrapper {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .dependency-graph-container {
   display: flex;
   flex-direction: column;
@@ -259,29 +659,69 @@ body {
 
 .graph-header {
   padding: 12px 16px;
-  border-bottom: 1px solid rgba(255,255,255,0.03);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  flex-shrink: 0;
 }
 
 .graph-header h3 {
-  margin: 0;
-  font-size: 14px;
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #e6eef6;
 }
 
 .graph-legend {
   display: flex;
   gap: 16px;
+  flex-wrap: wrap;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font-size: 12px;
-  color: #8b8f93;
+  color: #6b7a87;
+}
+
+.legend-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
 
 .graph-canvas {
   flex: 1;
   min-height: 0;
   width: 100%;
+  display: block;
 }
 
 /* =========================
-   RESPONSIVE BEHAVIOR
+   SCROLLBAR STYLING
+   ========================= */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* =========================
+   RESPONSIVE BREAKPOINTS
    ========================= */
 @media (max-width: 1200px) {
   .main-content {
@@ -289,13 +729,27 @@ body {
   }
 }
 
-@media (max-width: 800px) {
+@media (max-width: 900px) {
+  .main-content {
+    grid-template-columns: 180px minmax(0, 1fr) 260px;
+  }
+
+  .modal-content {
+    width: 95vw;
+  }
+}
+
+@media (max-width: 700px) {
   .main-content {
     grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr auto;
   }
 
   .file-tree {
     order: 0;
+    max-height: 160px;
+    border-right: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
   }
 
   .editor-container {
@@ -304,12 +758,189 @@ body {
 
   .issues-panel {
     order: 2;
+    max-height: 240px;
+    border-left: none;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
   }
 }
 
 @media (max-width: 480px) {
-  .file-tree,
-  .issues-panel {
+  .App-header h1 {
     display: none;
   }
+
+  .file-name {
+    display: none;
+  }
+}
+/* =========================
+   MONACO LINE HIGHLIGHT
+   (injected by CodeEditor navigateTo effect)
+   ========================= */
+.highlighted-line {
+  background: rgba(14, 99, 156, 0.25) !important;
+  border-left: 3px solid #0e639c !important;
+  transition: background 0.3s ease;
+}
+/* =========================
+   ISSUES PANEL — CONTROLS
+   ========================= */
+
+/* Total count badge next to "Issues" heading */
+.issues-total-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.08);
+  color: #9aa4ab;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 8px;
+  margin-left: 6px;
+  vertical-align: middle;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* Severity filter button row */
+.issues-filters {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.filter-btn {
+  background: rgba(255, 255, 255, 0.05);
+  color: #8b9ba8;
+  border: 1px solid transparent;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 500;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+
+.filter-btn:hover {
+  background: rgba(255, 255, 255, 0.09);
+  color: #d4d4d4;
+}
+
+.filter-btn.active {
+  background: rgba(255, 255, 255, 0.1);
+  color: #e6eef6;
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.filter-btn-error.active {
+  background: rgba(244, 135, 113, 0.15);
+  color: #f48771;
+  border-color: rgba(244, 135, 113, 0.3);
+}
+
+.filter-btn-warning.active {
+  background: rgba(255, 215, 0, 0.12);
+  color: #ffd700;
+  border-color: rgba(255, 215, 0, 0.25);
+}
+
+.filter-btn-info.active {
+  background: rgba(100, 180, 255, 0.12);
+  color: #64b4ff;
+  border-color: rgba(100, 180, 255, 0.25);
+}
+
+/* Search + sort row */
+.issues-toolbar {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  flex-shrink: 0;
+}
+
+.issues-search {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  color: #d4d4d4;
+  font-size: 12px;
+  padding: 5px 8px;
+  outline: none;
+  min-width: 0;
+  transition: border-color 0.15s;
+}
+
+.issues-search::placeholder {
+  color: #4a5560;
+}
+
+.issues-search:focus {
+  border-color: rgba(14, 99, 156, 0.7);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.issues-sort {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  color: #9aa4ab;
+  font-size: 11px;
+  padding: 5px 6px;
+  outline: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color 0.15s;
+}
+
+.issues-sort:focus {
+  border-color: rgba(14, 99, 156, 0.7);
+}
+
+/* Issue location row — filepath + line + source */
+.issue-location {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 11px;
+  color: #5a6470;
+  font-family: 'Consolas', 'Courier New', monospace;
+  margin-top: 3px;
+  flex-wrap: wrap;
+}
+
+.issue-filepath {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 140px;
+  flex-shrink: 1;
+}
+
+.issue-line {
+  color: #4a5560;
+  flex-shrink: 0;
+}
+
+.issue-source {
+  flex-shrink: 0;
+  font-weight: 600;
+  font-size: 10px;
+}
+/* =========================
+   DEPENDENCY GRAPH EMPTY STATE
+   ========================= */
+.graph-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #3a4550;
+  font-size: 13px;
 }

@@ -1,455 +1,599 @@
-import React, { useEffect, useRef } from 'react';
+// client/src/components/DependencyGraph.tsx
+import React, { useEffect, useRef, useCallback } from 'react';
 
-type FileInput =
-  | string
-  | {
-      path: string;
-      content?: string;
-    };
+// ─────────────────────────────────────────
+// TYPES
+// ─────────────────────────────────────────
 
-interface DependencyGraphProps {
-  files: FileInput[]; // either string paths or {path, content}
+interface FileInput {
+  path: string;
+  content?: string;
 }
 
 interface Node {
-  id: string;       // full path
-  label: string;    // display label (basename)
+  id: string;       // full relative path — unique key
+  label: string;    // basename displayed on canvas
   x: number;
   y: number;
-  vx: number;
-  vy: number;
-  mass: number;
+  vx: number;       // velocity x
+  vy: number;       // velocity y
+  mass: number;     // heavier nodes repel more
+  pinned: boolean;  // true while user is dragging
 }
 
 interface Link {
-  source: string; // id
-  target: string; // id
+  source: string;   // Node id
+  target: string;   // Node id
 }
 
-const DEVICE_PIXEL_RATIO = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+interface DependencyGraphProps {
+  files: FileInput[];
+}
+
+// ─────────────────────────────────────────
+// CONSTANTS
+// ─────────────────────────────────────────
+
+const DEVICE_PIXEL_RATIO =
+  typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+
+// Physics tuning
+const REPULSION       = 8000;   // node-to-node repulsion strength
+const SPRING_LENGTH   = 120;    // desired link length in px
+const SPRING_STRENGTH = 0.04;   // link attraction multiplier
+const DAMPING         = 0.82;   // velocity damping per tick (0–1)
+const MAX_VELOCITY    = 25;     // clamp velocity to prevent explosions
+const CENTER_GRAVITY  = 0.015;  // gentle pull toward canvas center
+
+// Visual
+const NODE_RADIUS         = 10;
+const NODE_RADIUS_HOVER   = 13;
+const NODE_RADIUS_DRAGGED = 15;
+const LABEL_OFFSET        = 18; // px below node center
+const HIT_RADIUS          = 18; // larger than visual for easier clicking
+
+// ─────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────
+
+function basename(p: string): string {
+  return p.split('/').pop() ?? p;
+}
+
+function extname(p: string): string {
+  const b = basename(p);
+  const i = b.lastIndexOf('.');
+  return i === -1 ? '' : b.slice(i).toLowerCase();
+}
+
+function nameWithoutExt(p: string): string {
+  const b = basename(p);
+  const i = b.lastIndexOf('.');
+  return i === -1 ? b : b.slice(0, i);
+}
+
+/**
+ * getNodeColor()
+ * Color-codes nodes by file type so the graph is scannable at a glance.
+ */
+function getNodeColor(id: string): string {
+  const ext = extname(id);
+  switch (ext) {
+    case '.c':   return '#6a8fd4'; // blue  — C source
+    case '.h':   return '#4ec9b0'; // teal  — C header
+    case '.py':  return '#f7c14f'; // amber — Python
+    default:     return '#8b8f93'; // grey  — other
+  }
+}
+
+/**
+ * parseDependencies()
+ *
+ * Parses a file's content and returns the IDs (paths) of other
+ * files in the project that it depends on.
+ *
+ * Handles:
+ *   C:      #include "file.h"
+ *   Python: import module / from module import x
+ *   JS/TS:  import ... from './module' / require('./module')
+ */
+function parseDependencies(
+  filePath: string,
+  content: string,
+  allPaths: string[]
+): string[] {
+  const targets = new Set<string>();
+
+  // Build lookup maps: basename → paths[], nameNoExt → paths[]
+  const byBasename  = new Map<string, string[]>();
+  const byNameNoExt = new Map<string, string[]>();
+
+  for (const p of allPaths) {
+    const b    = basename(p);
+    const noex = nameWithoutExt(p);
+
+    if (!byBasename.has(b))   byBasename.set(b, []);
+    if (!byNameNoExt.has(noex)) byNameNoExt.set(noex, []);
+
+    byBasename.get(b)!.push(p);
+    byNameNoExt.get(noex)!.push(p);
+  }
+
+  const resolve = (name: string) => {
+    // Try exact basename match first
+    const exact = byBasename.get(name);
+    if (exact) exact.forEach((p) => targets.add(p));
+
+    // Then try name without extension
+    const noext = name.replace(/\.[^.]+$/, '');
+    const noextMatch = byNameNoExt.get(noext);
+    if (noextMatch) noextMatch.forEach((p) => targets.add(p));
+  };
+
+  // 1. C: #include "header.h"  (quoted only — ignore <system> headers)
+  const cInclude = /#include\s+"([^"]+)"/g;
+  let m: RegExpExecArray | null;
+  while ((m = cInclude.exec(content)) !== null) {
+    resolve(m[1]);
+    // Also try just the filename part in case path is prefixed
+    resolve(basename(m[1]));
+  }
+
+  // 2. Python: import X  /  from X import Y  /  from X.Y import Z
+  const pyImport = /^\s*(?:from|import)\s+([\w.]+)/gm;
+  while ((m = pyImport.exec(content)) !== null) {
+    const parts = m[1].split('.');
+    // Try the last component (most specific) and the first (package name)
+    resolve(parts[parts.length - 1]);
+    if (parts.length > 1) resolve(parts[0]);
+  }
+
+  // 3. JS/TS: import ... from './x'  /  require('./x')
+  const jsImport =
+    /(?:import\s+(?:[\s\S]*?\s+from\s+)?|require\s*\(\s*)['"]([^'"]+)['"]/g;
+  while ((m = jsImport.exec(content)) !== null) {
+    const parts = m[1].split('/');
+    const last  = parts[parts.length - 1].replace(/\.(js|ts|jsx|tsx)$/, '');
+    resolve(last);
+    resolve(parts[parts.length - 1]); // also try with extension
+  }
+
+  // Remove self-reference
+  targets.delete(filePath);
+
+  return Array.from(targets);
+}
+
+// ─────────────────────────────────────────
+// COMPONENT
+// ─────────────────────────────────────────
 
 const DependencyGraph: React.FC<DependencyGraphProps> = ({ files }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const rafRef = useRef<number | null>(null);
+  const rafRef    = useRef<number | null>(null);
 
-  // keep simulation data in refs to avoid rerenders
-  const nodesRef = useRef<Node[]>([]);
-  const linksRef = useRef<Link[]>([]);
-  const nodeIndexRef = useRef<Map<string, number>>(new Map());
-  
-  // Mouse interaction state
-  const draggedNodeRef = useRef<Node | null>(null);
-  const hoveredNodeRef = useRef<Node | null>(null);
-  const mouseXRef = useRef<number>(0);
-  const mouseYRef = useRef<number>(0);
+  // Simulation data lives in refs — mutated directly each frame
+  // to avoid triggering React re-renders on every tick
+  const nodesRef   = useRef<Node[]>([]);
+  const linksRef   = useRef<Link[]>([]);
+  const nodeMapRef = useRef<Map<string, Node>>(new Map());
 
-  // Utility helpers
-  const basename = (p: string) => {
-    const parts = p.split('/');
-    return parts[parts.length - 1];
-  };
-  const removeExt = (p: string) => {
-    const b = basename(p);
-    const idx = b.lastIndexOf('.');
-    return idx === -1 ? b : b.slice(0, idx);
-  };
+  // Mouse interaction
+  const draggedRef = useRef<Node | null>(null);
+  const hoveredRef = useRef<Node | null>(null);
 
-  // Parse dependencies from content -> list of target path strings (must match provided files)
-  function parseDependenciesForFile(filePath: string, content: string | undefined, allPaths: string[]) {
-    if (!content) return [];
-    const targets = new Set<string>();
-
-    // Prepare lookup by basename, basename without ext, and full path
-    const byBasename = new Map<string, string[]>();
-    const byNameNoExt = new Map<string, string[]>();
-    for (const p of allPaths) {
-      const b = basename(p);
-      const noext = removeExt(p);
-      if (!byBasename.has(b)) byBasename.set(b, []);
-      byBasename.get(b)!.push(p);
-      if (!byNameNoExt.has(noext)) byNameNoExt.set(noext, []);
-      byNameNoExt.get(noext)!.push(p);
-    }
-
-    // 1) C includes: #include "file.h" (we only resolve quoted includes)
-    const includeRegex = /#include\s+"([^"]+)"/g;
-    let m: RegExpExecArray | null;
-    while ((m = includeRegex.exec(content)) !== null) {
-      const inc = m[1]; // e.g. "myheader.h"
-      // try full basename match first
-      const cand = byBasename.get(inc);
-      if (cand) cand.forEach(p => targets.add(p));
-      // also try by name without ext
-      const noExt = inc.replace(/\.[^.]+$/, '');
-      const cand2 = byNameNoExt.get(noExt);
-      if (cand2) cand2.forEach(p => targets.add(p));
-    }
-
-    // 2) Python: import X, import X as Y, from X import Y, from X.Y import Z
-    // We'll map module X to files whose no-ext basename equals last path component of X
-    // allow relative imports like from .module import x
-    const pyImportRegex = /^\s*(?:from|import)\s+([A-Za-z0-9_\.]+(?:\.[A-Za-z0-9_\.]+)*)/gm;
-    while ((m = pyImportRegex.exec(content)) !== null) {
-      let mod = m[1]; // could be "pkg.module" or "module"
-      // ignore absolute stdlib names that don't map to file set automatically,
-      // but still attempt to resolve to a matching file name
-      const parts = mod.split('.');
-      const candidateName = parts[parts.length - 1];
-      const matched = byNameNoExt.get(candidateName);
-      if (matched) matched.forEach(p => targets.add(p));
-    }
-
-    // 3) JS/TS: import ... from 'module' or require('module')
-    const importFromRegex = /(?:import\s+(?:[^'"]+\s+from\s+)?|require\()\s*['"]([^'"]+)['"]/g;
-    while ((m = importFromRegex.exec(content)) !== null) {
-      let mod = m[1];
-      // ignore absolute packages (no slash and no relative dot)
-      if (!mod) continue;
-      // If relative or has path parts, take last segment (module name)
-      const parts = mod.split('/');
-      const candidateName = parts[parts.length - 1].replace(/\.(js|ts|jsx|tsx)$/, '');
-      const matched = byNameNoExt.get(candidateName);
-      if (matched) matched.forEach(p => targets.add(p));
-      // also check full basename match
-      const base = parts[parts.length - 1];
-      const cand2 = byBasename.get(base);
-      if (cand2) cand2.forEach(p => targets.add(p));
-    }
-
-    // remove self-targeting
-    if (targets.has(filePath)) targets.delete(filePath);
-
-    return Array.from(targets);
-  }
-
+  // ── Build graph data whenever files prop changes ──
   useEffect(() => {
-    // Build initial nodes and links whenever the `files` prop changes
-    // Normalize files into {path, content?} objects
-    const normalized: { path: string; content?: string }[] = files.map(f =>
-      typeof f === 'string' ? { path: f } : { path: f.path, content: f.content }
-    );
+    const allPaths = files.map((f) => f.path);
+    const canvas   = canvasRef.current;
+    const cw       = canvas ? canvas.clientWidth  || 800 : 800;
+    const ch       = canvas ? canvas.clientHeight || 500 : 500;
 
-    const allPaths = normalized.map(f => f.path);
-
-    // Create nodes
-    const nodes: Node[] = normalized.map((f) => ({
-      id: f.path,
-      label: basename(f.path),
-      x: Math.random() * 600 + 100,
-      y: Math.random() * 400 + 50,
-      vx: 0,
-      vy: 0,
-      mass: 1,
+    // Create nodes — scatter randomly inside the canvas
+    const nodes: Node[] = files.map((f) => ({
+      id:     f.path,
+      label:  basename(f.path),
+      x:      Math.random() * (cw * 0.7) + cw * 0.15,
+      y:      Math.random() * (ch * 0.7) + ch * 0.15,
+      vx:     0,
+      vy:     0,
+      mass:   1,
+      pinned: false,
     }));
 
-    // Build fast id->index map
-    const idxMap = new Map<string, number>();
-    nodes.forEach((n, i) => idxMap.set(n.id, i));
-    nodeIndexRef.current = idxMap;
+    // Build fast id → node map
+    const nodeMap = new Map<string, Node>();
+    nodes.forEach((n) => nodeMap.set(n.id, n));
 
-    // Build links by parsing content; only create link when a parsed dependency resolves to an existing file
+    // Build links from dependency parsing
     const links: Link[] = [];
-    for (const f of normalized) {
-      if (!f.content) continue; // can't infer deps without content
-      const deps = parseDependenciesForFile(f.path, f.content, allPaths);
-      deps.forEach(depPath => {
-        // ensure both source and target exist in our nodes set
-        if (idxMap.has(f.path) && idxMap.has(depPath)) {
-          // Add one directional link f -> depPath (you can choose to make it bidirectional if you prefer)
-          links.push({ source: f.path, target: depPath });
+    for (const f of files) {
+      if (!f.content) continue;
+      const deps = parseDependencies(f.path, f.content, allPaths);
+      for (const dep of deps) {
+        if (nodeMap.has(f.path) && nodeMap.has(dep)) {
+          links.push({ source: f.path, target: dep });
         }
-      });
+      }
     }
 
-    // Deduplicate links
+    // Deduplicate links (A→B and B→A count as one visual edge)
     const seen = new Set<string>();
-    const dedupedLinks = links.filter(l => {
-      const key = `${l.source}||${l.target}`;
+    const dedupedLinks = links.filter((l) => {
+      const key = [l.source, l.target].sort().join('||');
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     });
 
-    // store in refs
-    nodesRef.current = nodes;
-    linksRef.current = dedupedLinks;
+    nodesRef.current   = nodes;
+    linksRef.current   = dedupedLinks;
+    nodeMapRef.current = nodeMap;
   }, [files]);
 
-  // Simulation and drawing effect
+  // ── Hit test ──
+  const getNodeAt = useCallback((cx: number, cy: number): Node | null => {
+    const nodes = nodesRef.current;
+    // Iterate in reverse so topmost-drawn node wins
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const n  = nodes[i];
+      const dx = n.x - cx;
+      const dy = n.y - cy;
+      if (Math.sqrt(dx * dx + dy * dy) <= HIT_RADIUS) return n;
+    }
+    return null;
+  }, []);
+
+  // ── Canvas coordinate conversion ──
+  const toCanvasCoords = useCallback(
+    (e: MouseEvent): { x: number; y: number } => {
+      const canvas = canvasRef.current;
+      if (!canvas) return { x: 0, y: 0 };
+      const rect   = canvas.getBoundingClientRect();
+      // Scale from CSS pixels → canvas logical pixels
+      return {
+        x: (e.clientX - rect.left)  * (canvas.width  / rect.width  / DEVICE_PIXEL_RATIO),
+        y: (e.clientY - rect.top)   * (canvas.height / rect.height / DEVICE_PIXEL_RATIO),
+      };
+    },
+    []
+  );
+
+  // ── Simulation + rendering loop ──
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // set DPR-aware size
-    function resizeCanvasToDisplaySize() {
+    // ── Resize canvas to actual pixel dimensions ──
+    function syncCanvasSize() {
       if (!canvas) return;
       const rect = canvas.getBoundingClientRect();
-      const w = Math.max(1, Math.floor(rect.width));
-      const h = Math.max(1, Math.floor(rect.height));
-      const pxWidth = Math.floor(w * DEVICE_PIXEL_RATIO);
-      const pxHeight = Math.floor(h * DEVICE_PIXEL_RATIO);
-      if (canvas.width !== pxWidth || canvas.height !== pxHeight) {
-        canvas.width = pxWidth;
-        canvas.height = pxHeight;
-        canvas.style.width = `${w}px`;
+      const w    = Math.max(1, Math.floor(rect.width));
+      const h    = Math.max(1, Math.floor(rect.height));
+      const pw   = Math.floor(w * DEVICE_PIXEL_RATIO);
+      const ph   = Math.floor(h * DEVICE_PIXEL_RATIO);
+      if (canvas.width !== pw || canvas.height !== ph) {
+        canvas.width        = pw;
+        canvas.height       = ph;
+        canvas.style.width  = `${w}px`;
         canvas.style.height = `${h}px`;
         ctx?.setTransform(DEVICE_PIXEL_RATIO, 0, 0, DEVICE_PIXEL_RATIO, 0, 0);
       }
     }
 
-    // simulation parameters (tweak as needed)
-    const REPULSION = 90000; // larger => nodes push away more
-    const SPRING_LENGTH = 100; // desired length of links
-    const SPRING_STRENGTH = 0.02; // attraction multiplier
-    const DAMPING = 0.85; // velocity damping
-    const MAX_DISPLACEMENT = 30; // limit per tick to keep stable
-
     let lastTime = performance.now();
 
-    function step(t: number) {
+    function tick(now: number) {
       if (!canvas || !ctx) return;
-      resizeCanvasToDisplaySize();
-      const nodes = nodesRef.current;
-      const links = linksRef.current;
-      const width = canvas.clientWidth;
-      const height = canvas.clientHeight;
 
-      // small timestep
-      const dt = Math.min(0.03, (t - lastTime) / 1000); // seconds
-      lastTime = t;
+      syncCanvasSize();
 
-      // Build position lookup for faster link access
-      const posById = new Map<string, Node>();
-      nodes.forEach(n => posById.set(n.id, n));
+      const nodes   = nodesRef.current;
+      const links   = linksRef.current;
+      const nodeMap = nodeMapRef.current;
+      const W       = canvas.clientWidth;
+      const H       = canvas.clientHeight;
+      const cx      = W / 2;
+      const cy      = H / 2;
 
-      // Repulsive forces (O(n^2) for small graphs; ok for tens/hundreds)
+      const dt = Math.min(0.032, (now - lastTime) / 1000);
+      lastTime = now;
+
+      // ── Physics: repulsion (O(n²) — fine for < 200 nodes) ──
       for (let i = 0; i < nodes.length; i++) {
-        const n = nodes[i];
+        if (nodes[i].pinned) continue;
         let fx = 0;
         let fy = 0;
+
         for (let j = 0; j < nodes.length; j++) {
           if (i === j) continue;
-          const o = nodes[j];
-          let dx = n.x - o.x;
-          let dy = n.y - o.y;
-          let dist2 = dx * dx + dy * dy;
-          if (dist2 === 0) {
-            dx = (Math.random() - 0.5) * 1e-3;
-            dy = (Math.random() - 0.5) * 1e-3;
-            dist2 = dx * dx + dy * dy;
+          let dx   = nodes[i].x - nodes[j].x;
+          let dy   = nodes[i].y - nodes[j].y;
+          let dist = Math.sqrt(dx * dx + dy * dy) || 0.001;
+
+          // Jitter overlapping nodes
+          if (dist < 0.5) {
+            dx   = (Math.random() - 0.5) * 0.5;
+            dy   = (Math.random() - 0.5) * 0.5;
+            dist = 0.5;
           }
-          const dist = Math.sqrt(dist2);
-          const force = (REPULSION * n.mass * o.mass) / (dist2 + 0.01);
+
+          const force = (REPULSION * nodes[i].mass * nodes[j].mass) / (dist * dist);
           fx += (dx / dist) * force;
           fy += (dy / dist) * force;
         }
-        // accumulate repulsive forces into velocities
-        n.vx += (fx * dt) / n.mass;
-        n.vy += (fy * dt) / n.mass;
+
+        // ── Center gravity — prevents nodes drifting off-screen ──
+        fx += (cx - nodes[i].x) * CENTER_GRAVITY * nodes[i].mass;
+        fy += (cy - nodes[i].y) * CENTER_GRAVITY * nodes[i].mass;
+
+        nodes[i].vx += (fx * dt) / nodes[i].mass;
+        nodes[i].vy += (fy * dt) / nodes[i].mass;
       }
 
-      // Attractive spring forces along links
-      for (let k = 0; k < links.length; k++) {
-        const link = links[k];
-        const a = posById.get(link.source);
-        const b = posById.get(link.target);
+      // ── Physics: spring attraction along links ──
+      for (const link of links) {
+        const a = nodeMap.get(link.source);
+        const b = nodeMap.get(link.target);
         if (!a || !b) continue;
-        let dx = b.x - a.x;
-        let dy = b.y - a.y;
-        let dist = Math.hypot(dx, dy) || 1;
-        const diff = dist - SPRING_LENGTH;
+
+        const dx   = b.x - a.x;
+        const dy   = b.y - a.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 0.001;
+        const diff  = dist - SPRING_LENGTH;
         const force = SPRING_STRENGTH * diff;
-        const fx = (dx / dist) * force;
-        const fy = (dy / dist) * force;
-        // apply equal and opposite to both nodes (symmetrical)
-        a.vx += (fx * dt) / a.mass;
-        a.vy += (fy * dt) / a.mass;
-        b.vx -= (fx * dt) / b.mass;
-        b.vy -= (fy * dt) / b.mass;
+        const fx    = (dx / dist) * force;
+        const fy    = (dy / dist) * force;
+
+        if (!a.pinned) {
+          a.vx += (fx * dt) / a.mass;
+          a.vy += (fy * dt) / a.mass;
+        }
+        if (!b.pinned) {
+          b.vx -= (fx * dt) / b.mass;
+          b.vy -= (fy * dt) / b.mass;
+        }
       }
 
-      // Integrate velocities -> positions, apply damping and clamp
-      for (let i = 0; i < nodes.length; i++) {
-        const n = nodes[i];
+      // ── Integrate positions ──
+      const margin = NODE_RADIUS + 24;
+      for (const n of nodes) {
+        if (n.pinned) continue;
 
-        // Apply damping
         n.vx *= DAMPING;
         n.vy *= DAMPING;
-
-        // limit displacement to avoid explosions
-        n.vx = Math.max(-MAX_DISPLACEMENT, Math.min(MAX_DISPLACEMENT, n.vx));
-        n.vy = Math.max(-MAX_DISPLACEMENT, Math.min(MAX_DISPLACEMENT, n.vy));
+        n.vx  = Math.max(-MAX_VELOCITY, Math.min(MAX_VELOCITY, n.vx));
+        n.vy  = Math.max(-MAX_VELOCITY, Math.min(MAX_VELOCITY, n.vy));
 
         n.x += n.vx;
         n.y += n.vy;
 
-        // Keep inside canvas bounds with margins
-        const margin = 24;
-        n.x = Math.max(margin, Math.min(width - margin, n.x));
-        n.y = Math.max(margin, Math.min(height - margin, n.y));
+        // Bounce off canvas edges
+        n.x = Math.max(margin, Math.min(W - margin, n.x));
+        n.y = Math.max(margin, Math.min(H - margin, n.y));
       }
 
-      // Draw background
+      // ── Draw: background ──
       ctx.fillStyle = '#0f1113';
-      ctx.fillRect(0, 0, canvas.width / DEVICE_PIXEL_RATIO, canvas.height / DEVICE_PIXEL_RATIO);
+      ctx.fillRect(0, 0, W, H);
 
-      // Draw links (lighter)
-      ctx.strokeStyle = 'rgba(100,150,200,0.25)';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      for (let k = 0; k < links.length; k++) {
-        const link = links[k];
-        const a = posById.get(link.source);
-        const b = posById.get(link.target);
+      // ── Draw: links ──
+      for (const link of links) {
+        const a = nodeMap.get(link.source);
+        const b = nodeMap.get(link.target);
         if (!a || !b) continue;
-        ctx.moveTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
+
+        // Draw arrowhead to show direction
+        const dx     = b.x - a.x;
+        const dy     = b.y - a.y;
+        const dist   = Math.sqrt(dx * dx + dy * dy) || 1;
+        const ux     = dx / dist;
+        const uy     = dy / dist;
+        // Stop the line at the edge of the target node
+        const endX   = b.x - ux * (NODE_RADIUS + 4);
+        const endY   = b.y - uy * (NODE_RADIUS + 4);
+        const startX = a.x + ux * (NODE_RADIUS + 4);
+        const startY = a.y + uy * (NODE_RADIUS + 4);
+
+        // Line
+        ctx.beginPath();
+        ctx.moveTo(startX, startY);
+        ctx.lineTo(endX, endY);
+        ctx.strokeStyle = 'rgba(100, 150, 200, 0.22)';
+        ctx.lineWidth   = 1.2;
+        ctx.stroke();
+
+        // Arrowhead
+        const arrowLen   = 8;
+        const arrowAngle = Math.PI / 6;
+        ctx.beginPath();
+        ctx.moveTo(endX, endY);
+        ctx.lineTo(
+          endX - arrowLen * Math.cos(Math.atan2(dy, dx) - arrowAngle),
+          endY - arrowLen * Math.sin(Math.atan2(dy, dx) - arrowAngle)
+        );
+        ctx.moveTo(endX, endY);
+        ctx.lineTo(
+          endX - arrowLen * Math.cos(Math.atan2(dy, dx) + arrowAngle),
+          endY - arrowLen * Math.sin(Math.atan2(dy, dx) + arrowAngle)
+        );
+        ctx.strokeStyle = 'rgba(100, 150, 200, 0.35)';
+        ctx.lineWidth   = 1.2;
+        ctx.stroke();
       }
-      ctx.stroke();
 
-      // Draw nodes
-      for (let i = 0; i < nodes.length; i++) {
-        const n = nodes[i];
-        const isC = n.id.endsWith('.c') || n.id.endsWith('.h');
-        const isPy = n.id.endsWith('.py');
-        const fill = isC ? '#6a8fd4' : isPy ? '#f7c14f' : '#8b8f93';
-        
-        const isHovered = hoveredNodeRef.current === n;
-        const isDragged = draggedNodeRef.current === n;
-        const radius = isDragged ? 16 : isHovered ? 14 : 12;
+      // ── Draw: nodes ──
+      for (const n of nodes) {
+        const isDragged = draggedRef.current === n;
+        const isHovered = hoveredRef.current === n;
+        const radius    = isDragged
+          ? NODE_RADIUS_DRAGGED
+          : isHovered
+          ? NODE_RADIUS_HOVER
+          : NODE_RADIUS;
+        const color     = getNodeColor(n.id);
 
-        // circle
-        ctx.fillStyle = fill;
+        // Glow for hovered/dragged nodes
+        if (isHovered || isDragged) {
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, radius + 6, 0, Math.PI * 2);
+          const glow = ctx.createRadialGradient(n.x, n.y, radius, n.x, n.y, radius + 6);
+          glow.addColorStop(0, color + '55');
+          glow.addColorStop(1, 'transparent');
+          ctx.fillStyle = glow;
+          ctx.fill();
+        }
+
+        // Node circle
         ctx.beginPath();
         ctx.arc(n.x, n.y, radius, 0, Math.PI * 2);
+        ctx.fillStyle = color;
         ctx.fill();
 
-        // highlight outline for hovered/dragged nodes
+        // White outline for hovered/dragged
         if (isHovered || isDragged) {
-          ctx.strokeStyle = isDragged ? '#ffffff' : 'rgba(255,255,255,0.5)';
-          ctx.lineWidth = isDragged ? 3 : 2;
-          ctx.beginPath();
-          ctx.arc(n.x, n.y, radius + 2, 0, Math.PI * 2);
+          ctx.strokeStyle = isDragged
+            ? 'rgba(255,255,255,0.9)'
+            : 'rgba(255,255,255,0.5)';
+          ctx.lineWidth = isDragged ? 2.5 : 1.5;
           ctx.stroke();
         }
 
-        // label (draw below the node to reduce overlap)
-        ctx.fillStyle = '#d4d4d4';
-        ctx.font = '11px monospace';
-        ctx.textAlign = 'center';
+        // Label below the node
+        ctx.fillStyle    = isHovered || isDragged ? '#ffffff' : '#c0cdd8';
+        ctx.font         = `${isHovered ? 12 : 11}px 'Consolas', monospace`;
+        ctx.textAlign    = 'center';
         ctx.textBaseline = 'top';
-        ctx.fillText(n.label, n.x, n.y + 16);
+        ctx.fillText(n.label, n.x, n.y + LABEL_OFFSET);
       }
 
-      // continue loop
-      rafRef.current = requestAnimationFrame(step);
+      // ── Draw: node count ──
+      ctx.fillStyle    = '#3a4550';
+      ctx.font         = '11px sans-serif';
+      ctx.textAlign    = 'left';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(
+        `${nodesRef.current.length} nodes · ${linksRef.current.length} edges`,
+        10,
+        H - 8
+      );
+
+      rafRef.current = requestAnimationFrame(tick);
     }
 
-    // start
+    // ── Start loop ──
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    lastTime = performance.now();
-    rafRef.current = requestAnimationFrame(step);
+    lastTime       = performance.now();
+    rafRef.current = requestAnimationFrame(tick);
 
-    // Mouse event handlers
-    const getMousePos = (e: MouseEvent): { x: number; y: number } => {
-      const rect = canvas.getBoundingClientRect();
-      return {
-        x: (e.clientX - rect.left) * (canvas.width / rect.width),
-        y: (e.clientY - rect.top) * (canvas.height / rect.height),
-      };
-    };
+    // ── Mouse handlers ──
+    const onMouseMove = (e: MouseEvent) => {
+      const pos  = toCanvasCoords(e);
+      const node = getNodeAt(pos.x, pos.y);
+      hoveredRef.current = node;
 
-    const getNodeAtPoint = (x: number, y: number): Node | null => {
-      const nodes = nodesRef.current;
-      const hitRadius = 16; // slightly larger than visual radius for easier clicking
-      for (let i = nodes.length - 1; i >= 0; i--) {
-        const n = nodes[i];
-        const dx = n.x - x;
-        const dy = n.y - y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist <= hitRadius) return n;
-      }
-      return null;
-    };
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const pos = getMousePos(e);
-      mouseXRef.current = pos.x;
-      mouseYRef.current = pos.y;
-
-      const node = getNodeAtPoint(pos.x, pos.y);
-      hoveredNodeRef.current = node;
-
-      if (draggedNodeRef.current) {
-        draggedNodeRef.current.x = pos.x;
-        draggedNodeRef.current.y = pos.y;
-        // when dragging, stop velocity
-        draggedNodeRef.current.vx = 0;
-        draggedNodeRef.current.vy = 0;
+      if (draggedRef.current) {
+        draggedRef.current.x  = pos.x;
+        draggedRef.current.y  = pos.y;
+        draggedRef.current.vx = 0;
+        draggedRef.current.vy = 0;
       }
 
       canvas.style.cursor = node ? 'grab' : 'default';
     };
 
-    const handleMouseDown = (e: MouseEvent) => {
-      const pos = getMousePos(e);
-      const node = getNodeAtPoint(pos.x, pos.y);
+    const onMouseDown = (e: MouseEvent) => {
+      const pos  = toCanvasCoords(e);
+      const node = getNodeAt(pos.x, pos.y);
       if (node) {
-        draggedNodeRef.current = node;
+        node.pinned         = true;
+        draggedRef.current  = node;
         canvas.style.cursor = 'grabbing';
       }
     };
 
-    const handleMouseUp = () => {
-      draggedNodeRef.current = null;
-      canvas.style.cursor = hoveredNodeRef.current ? 'grab' : 'default';
+    const onMouseUp = () => {
+      if (draggedRef.current) {
+        draggedRef.current.pinned = false;
+        draggedRef.current        = null;
+      }
+      canvas.style.cursor = hoveredRef.current ? 'grab' : 'default';
     };
 
-    const handleMouseLeave = () => {
-      draggedNodeRef.current = null;
-      hoveredNodeRef.current = null;
+    const onMouseLeave = () => {
+      if (draggedRef.current) {
+        draggedRef.current.pinned = false;
+        draggedRef.current        = null;
+      }
+      hoveredRef.current  = null;
       canvas.style.cursor = 'default';
     };
 
-    canvas.addEventListener('mousemove', handleMouseMove);
-    canvas.addEventListener('mousedown', handleMouseDown);
-    canvas.addEventListener('mouseup', handleMouseUp);
-    canvas.addEventListener('mouseleave', handleMouseLeave);
+    const onResize = () => syncCanvasSize();
 
-    // resize on window change
-    const handleResize = () => {
-      // ensure canvas size update on next tick
-      if (canvas) {
-        const rect = canvas.getBoundingClientRect();
-        canvas.style.width = `${rect.width}px`;
-        canvas.style.height = `${rect.height}px`;
-      }
-    };
-    window.addEventListener('resize', handleResize);
+    canvas.addEventListener('mousemove',  onMouseMove);
+    canvas.addEventListener('mousedown',  onMouseDown);
+    canvas.addEventListener('mouseup',    onMouseUp);
+    canvas.addEventListener('mouseleave', onMouseLeave);
+    window.addEventListener('resize',     onResize);
 
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      canvas.removeEventListener('mousemove', handleMouseMove);
-      canvas.removeEventListener('mousedown', handleMouseDown);
-      canvas.removeEventListener('mouseup', handleMouseUp);
-      canvas.removeEventListener('mouseleave', handleMouseLeave);
-      window.removeEventListener('resize', handleResize);
+      canvas.removeEventListener('mousemove',  onMouseMove);
+      canvas.removeEventListener('mousedown',  onMouseDown);
+      canvas.removeEventListener('mouseup',    onMouseUp);
+      canvas.removeEventListener('mouseleave', onMouseLeave);
+      window.removeEventListener('resize',     onResize);
     };
-  }, [canvasRef]); // only once (graph data lives in refs updated by other useEffect)
+  }, [getNodeAt, toCanvasCoords]);
+
+  // ─────────────────────────────────────────
+  // RENDER
+  // ─────────────────────────────────────────
 
   return (
-    <div className="dependency-graph-container" style={{ width: '100%', height: '100%' }}>
+    <div className="dependency-graph-container">
+
+      {/* Header + legend */}
       <div className="graph-header">
         <h3>File Dependencies</h3>
-        <p className="graph-legend" aria-hidden>
-          <span className="legend-item"><span className="legend-dot" style={{ backgroundColor: '#6a8fd4' }}></span> .c/.h</span>
-          <span className="legend-item"><span className="legend-dot" style={{ backgroundColor: '#f7c14f' }}></span> .py</span>
-          <span className="legend-item"><span className="legend-dot" style={{ backgroundColor: '#8b8f93' }}></span> Other</span>
-        </p>
+        <div className="graph-legend">
+          <span className="legend-item">
+            <span className="legend-dot" style={{ backgroundColor: '#6a8fd4' }} />
+            .c source
+          </span>
+          <span className="legend-item">
+            <span className="legend-dot" style={{ backgroundColor: '#4ec9b0' }} />
+            .h header
+          </span>
+          <span className="legend-item">
+            <span className="legend-dot" style={{ backgroundColor: '#f7c14f' }} />
+            .py
+          </span>
+          <span className="legend-item">
+            <span className="legend-dot" style={{ backgroundColor: '#8b8f93' }} />
+            other
+          </span>
+          <span className="legend-item" style={{ marginLeft: 'auto', fontSize: '11px', color: '#3a4550' }}>
+            Drag nodes to rearrange
+          </span>
+        </div>
       </div>
-      <canvas ref={canvasRef} className="graph-canvas" style={{ width: '100%', height: 'calc(100% - 56px)', display: 'block' }} />
+
+      {/* Canvas */}
+      {files.length === 0 ? (
+        <div className="graph-empty">
+          Upload and analyze a project to see the dependency graph.
+        </div>
+      ) : (
+        <canvas
+          ref={canvasRef}
+          className="graph-canvas"
+        />
+      )}
+
     </div>
   );
 };
