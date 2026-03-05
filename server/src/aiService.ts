@@ -14,18 +14,20 @@ const MODEL_DIR  = process.env.MODEL_DIR
   ? path.resolve(SERVER_DIR, process.env.MODEL_DIR)
   : path.join(SERVER_DIR, 'models', 'Maincoder-1B-ONNX');
 
-// Generation parameters — tweak to trade speed vs quality
-const MAX_NEW_TOKENS = 250;
-const TEMPERATURE    = 0.2;
+// ── Generation parameters ──
+// MAX_NEW_TOKENS increased from 250 → 1024 so the model can finish
+// its explanation without being cut off mid-sentence or mid-codeblock.
+// TEMPERATURE slightly raised for more natural phrasing.
+const MAX_NEW_TOKENS = 1024;
+const TEMPERATURE    = 0.3;
 const DO_SAMPLE      = true;
 
-// cuDNN library path — where libcudnn.so.9 was installed
-// Found via: find /usr -name "libcudnn.so.9"
+// cuDNN library path — where libcudnn.so.9 is installed
 const CUDNN_LIB_PATH = '/usr/lib/x86_64-linux-gnu';
 
 // ─────────────────────────────────────────
 // LITERAL TYPES
-// Matches exactly what @huggingface/transformers expects
+// Matches exactly what @huggingface/transformers PretrainedModelOptions expects
 // ─────────────────────────────────────────
 
 type DeviceType =
@@ -64,24 +66,20 @@ let activeDevice: DeviceType = 'cpu';
 /**
  * ensureLibraryPaths()
  *
- * Programmatically adds the cuDNN library path to LD_LIBRARY_PATH
+ * Adds cuDNN and CUDA lib paths to LD_LIBRARY_PATH programmatically
  * so onnxruntime can find libcudnn.so.9 at runtime.
  *
- * This is needed because WSL2 doesn't always pick up paths added
- * via /etc/ld.so.conf.d until ldconfig is re-run AND the shell
- * is restarted. Setting it here guarantees it's always present
- * when the Node process starts.
+ * Needed because WSL2 doesn't always pick up /etc/ld.so.conf.d changes
+ * until the shell is fully restarted. Setting here guarantees it works.
  */
 function ensureLibraryPaths(): void {
   const currentLdPath = process.env.LD_LIBRARY_PATH || '';
 
-  // Only add if not already present
   if (!currentLdPath.includes(CUDNN_LIB_PATH)) {
     process.env.LD_LIBRARY_PATH = `${CUDNN_LIB_PATH}:${currentLdPath}`;
     console.log(`  📚 Added ${CUDNN_LIB_PATH} to LD_LIBRARY_PATH`);
   }
 
-  // Also ensure CUDA lib path is included
   const cudaLibPath = '/usr/local/cuda/lib64';
   if (!currentLdPath.includes(cudaLibPath) && fs.existsSync(cudaLibPath)) {
     process.env.LD_LIBRARY_PATH = `${cudaLibPath}:${process.env.LD_LIBRARY_PATH}`;
@@ -91,21 +89,16 @@ function ensureLibraryPaths(): void {
 
 /**
  * verifyCudnnLibrary()
- *
- * Checks that libcudnn.so.9 is actually accessible on the filesystem
- * before attempting to load the CUDA provider.
- * Returns true if found, false otherwise.
+ * Checks libcudnn.so.9 is on disk before committing to CUDA.
  */
 function verifyCudnnLibrary(): boolean {
   const cudnnPath = path.join(CUDNN_LIB_PATH, 'libcudnn.so.9');
   const exists    = fs.existsSync(cudnnPath);
-
   if (exists) {
     console.log(`  ✓ libcudnn.so.9 found at ${cudnnPath}`);
   } else {
     console.warn(`  ⚠️  libcudnn.so.9 not found at ${cudnnPath}`);
   }
-
   return exists;
 }
 
@@ -113,34 +106,19 @@ function verifyCudnnLibrary(): boolean {
 // GPU DETECTION
 // ─────────────────────────────────────────
 
-/**
- * isCudaAvailable()
- *
- * Runs nvidia-smi to check if a CUDA-capable GPU is accessible.
- * Works on Linux and WSL2 with NVIDIA drivers installed.
- * Returns false on any error — never throws.
- */
 function isCudaAvailable(): Promise<boolean> {
   return new Promise((resolve) => {
-    exec('nvidia-smi', (error) => {
-      resolve(!error);
-    });
+    exec('nvidia-smi', (error) => resolve(!error));
   });
 }
 
 /**
  * getOptimalDevice()
  *
- * Determines the best device to run inference on.
- *
- * Priority:
- *   1. DEVICE env var if explicitly set (auto | cpu | cuda)
- *   2. Auto-detect via nvidia-smi + cuDNN library check
- *
- * Set in server/.env:
- *   DEVICE=auto   → detect automatically (default)
+ * DEVICE env var overrides auto-detection:
+ *   DEVICE=auto   → detect (default)
  *   DEVICE=cuda   → force GPU
- *   DEVICE=cpu    → force CPU always
+ *   DEVICE=cpu    → force CPU
  */
 async function getOptimalDevice(): Promise<DeviceType> {
   const envDevice = process.env.DEVICE?.toLowerCase().trim();
@@ -155,10 +133,9 @@ async function getOptimalDevice(): Promise<DeviceType> {
     return 'cuda';
   }
 
-  // Auto-detect
   console.log('  🔍 Auto-detecting available device...');
+  const gpuFound = await isCudaAvailable();
 
-  const gpuFound  = await isCudaAvailable();
   if (!gpuFound) {
     console.log('  💻 No GPU detected — using CPU.');
     return 'cpu';
@@ -166,14 +143,11 @@ async function getOptimalDevice(): Promise<DeviceType> {
 
   console.log('  🎮 NVIDIA GPU detected.');
 
-  // Extra check — verify cuDNN is accessible before committing to CUDA
-  // This prevents the onnxruntime CUDA provider crash at model load time
   const cudnnFound = verifyCudnnLibrary();
   if (!cudnnFound) {
     console.warn(
       '  ⚠️  GPU found but libcudnn.so.9 is not accessible.\n' +
-      '  Run: sudo apt install -y libcudnn9-cuda-12\n' +
-      '  Then: sudo ldconfig\n' +
+      '  Run: sudo apt install -y libcudnn9-cuda-12 && sudo ldconfig\n' +
       '  Falling back to CPU for this session.'
     );
     return 'cpu';
@@ -185,11 +159,8 @@ async function getOptimalDevice(): Promise<DeviceType> {
 
 /**
  * getDtype()
- *
- * Always fp32 — the Maincoder-1B-ONNX model only ships
- * with the fp32 ONNX file (decoder_with_past_model.onnx).
- * fp16 would require decoder_with_past_model_fp16.onnx
- * which is not included in the download.
+ * Always fp32 — model only ships with fp32 ONNX file.
+ * fp16 would require decoder_with_past_model_fp16.onnx (not included).
  */
 function getDtype(_device: DeviceType): DtypeType {
   return 'fp32';
@@ -199,12 +170,6 @@ function getDtype(_device: DeviceType): DtypeType {
 // VALIDATION
 // ─────────────────────────────────────────
 
-/**
- * validateModelDirectory()
- *
- * Checks that the model folder and required files exist
- * before attempting to load.
- */
 function validateModelDirectory(): void {
   if (!fs.existsSync(MODEL_DIR)) {
     throw new Error(
@@ -240,27 +205,20 @@ function validateModelDirectory(): void {
 // MODEL LOADER
 // ─────────────────────────────────────────
 
-/**
- * loadModel()
- *
- * Loads the tokenizer and ONNX model on the specified device.
- * Throws on failure so initializeAI() can retry with fallback.
- */
 async function loadModel(
   device: DeviceType,
   dtype: DtypeType
 ): Promise<void> {
-  // Set library paths before loading — critical for CUDA provider
+  // Ensure library paths are set before loading — critical for CUDA
   ensureLibraryPaths();
 
-  // For CPU path — explicitly disable CUDA provider so onnxruntime
-  // doesn't try to dlopen libonnxruntime_providers_cuda.so at all
+  // For CPU: explicitly disable CUDA provider so onnxruntime doesn't
+  // try to dlopen libonnxruntime_providers_cuda.so at all
   if (device === 'cpu') {
-    process.env.ORT_DISABLE_CUDA    = '1';
+    process.env.ORT_DISABLE_CUDA     = '1';
     process.env.TRANSFORMERS_OFFLINE = '1';
   } else {
-    // For CUDA path — make sure we don't have ORT_DISABLE_CUDA set
-    // from a previous failed attempt
+    // Clear ORT_DISABLE_CUDA in case it was set by a previous failed attempt
     delete process.env.ORT_DISABLE_CUDA;
   }
 
@@ -269,7 +227,6 @@ async function loadModel(
   console.log(`  ✓ Tokenizer loaded`);
 
   console.log(`  Loading ONNX model on ${device.toUpperCase()} (${dtype})...`);
-
   model = await AutoModelForCausalLM.from_pretrained(MODEL_DIR, {
     subfolder:                '.',
     model_file_name:          'decoder_with_past_model',
@@ -290,14 +247,8 @@ async function loadModel(
  * initializeAI()
  *
  * Entry point called once on server startup.
- *
- * Flow:
- *   1. Validate model files exist
- *   2. Ensure library paths are set (LD_LIBRARY_PATH)
- *   3. Detect best device — GPU if nvidia-smi + cuDNN both pass
- *   4. Attempt load on preferred device
- *   5. If GPU load fails → automatically retry on CPU
- *   6. If CPU also fails → throw (server starts with AI disabled)
+ * Tries GPU first, falls back to CPU automatically if CUDA fails.
+ * Server starts regardless — AI features just get disabled.
  */
 export async function initializeAI(): Promise<void> {
   if (model && tokenizer) {
@@ -308,8 +259,6 @@ export async function initializeAI(): Promise<void> {
   validateModelDirectory();
 
   console.log(`\n📂 Model path : ${MODEL_DIR}`);
-
-  // Set library paths early — before any device detection
   ensureLibraryPaths();
 
   const preferredDevice = await getOptimalDevice();
@@ -317,12 +266,13 @@ export async function initializeAI(): Promise<void> {
 
   console.log(`  Target device : ${preferredDevice.toUpperCase()}`);
   console.log(`  dtype         : ${dtype}`);
+  console.log(`  MAX_NEW_TOKENS: ${MAX_NEW_TOKENS}`);
   console.log(`  This may take 30–60 seconds on first load...`);
 
   // ── Attempt 1: preferred device ──
   try {
     await loadModel(preferredDevice, dtype);
-    return; // success
+    return;
 
   } catch (primaryErr: any) {
 
@@ -331,7 +281,6 @@ export async function initializeAI(): Promise<void> {
       console.warn(`\n  ⚠️  CUDA load failed: ${primaryErr?.message}`);
       console.warn('  ↩️  Retrying on CPU (fp32)...\n');
 
-      // Clear partial state before retry
       tokenizer = null;
       model     = null;
 
@@ -339,12 +288,9 @@ export async function initializeAI(): Promise<void> {
         await loadModel('cpu', 'fp32');
         console.warn(
           '\n  ⚠️  Running on CPU fallback.\n' +
-          '  To fix GPU, run:\n' +
-          '    sudo apt install -y libcudnn9-cuda-12\n' +
-          '    sudo ldconfig\n' +
-          '  Then restart the server.'
+          '  To fix GPU: sudo apt install -y libcudnn9-cuda-12 && sudo ldconfig'
         );
-        return; // success on fallback
+        return;
 
       } catch (fallbackErr: any) {
         tokenizer = null;
@@ -357,27 +303,23 @@ export async function initializeAI(): Promise<void> {
       }
     }
 
-    // CPU was preferred and failed
     tokenizer = null;
     model     = null;
-    throw new Error(
-      `Failed to load model on CPU: ${primaryErr?.message}`
-    );
+    throw new Error(`Failed to load model on CPU: ${primaryErr?.message}`);
   }
 }
 
 /**
  * getAICompletion()
  *
- * Tokenizes the prompt, runs inference, decodes the output,
- * and strips the echoed prompt from the result.
+ * Tokenizes prompt → runs inference → decodes → strips echoed prompt.
+ * MAX_NEW_TOKENS is now 1024 so full explanations + code blocks fit.
  */
 export async function getAICompletion(prompt: string): Promise<string> {
   if (!model || !tokenizer) {
     throw new Error(
       'AI model is not initialized. ' +
-      'Ensure initializeAI() completed successfully ' +
-      'before calling getAICompletion().'
+      'Ensure initializeAI() completed successfully before calling getAICompletion().'
     );
   }
 
@@ -400,7 +342,7 @@ export async function getAICompletion(prompt: string): Promise<string> {
       skip_special_tokens: true,
     });
 
-    // Strip echoed prompt from start of decoded output
+    // Strip echoed prompt from start of output
     const completion = decoded.startsWith(prompt)
       ? decoded.slice(prompt.length).trim()
       : decoded.trim();
@@ -416,33 +358,18 @@ export async function getAICompletion(prompt: string): Promise<string> {
 
   } catch (err: any) {
     console.error('AI completion error:', err);
-    throw new Error(
-      `Model generation failed: ${err?.message ?? String(err)}`
-    );
+    throw new Error(`Model generation failed: ${err?.message ?? String(err)}`);
   }
 }
 
-/**
- * isAIAvailable()
- * Returns true if the model is loaded and ready for inference.
- */
 export function isAIAvailable(): boolean {
   return model !== null && tokenizer !== null;
 }
 
-/**
- * getActiveDevice()
- * Returns which device the model is running on ('cuda' | 'cpu').
- * Reported by the /health endpoint.
- */
 export function getActiveDevice(): string {
   return activeDevice;
 }
 
-/**
- * resetAI()
- * Clears model from memory — useful for testing.
- */
 export function resetAI(): void {
   tokenizer    = null;
   model        = null;

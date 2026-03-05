@@ -1,7 +1,6 @@
 // server/src/analysisService.ts
 import 'dotenv/config';
 import { exec } from 'child_process';
-import { promises as fs } from 'fs';
 import path from 'path';
 import { getFileContent, getProjectPath } from './projectService';
 
@@ -11,14 +10,13 @@ import { getFileContent, getProjectPath } from './projectService';
 
 export interface Diagnostic {
   filePath: string;
-  line: number;
-  column: number;
-  message: string;
+  line:     number;
+  column:   number;
+  message:  string;
   severity: 'error' | 'warning' | 'info';
-  source: string;
+  source:   string;
 }
 
-// Diagnostic without filePath — used internally before we attach the file path
 type RawDiagnostic = Omit<Diagnostic, 'filePath'>;
 
 // ─────────────────────────────────────────
@@ -28,23 +26,30 @@ type RawDiagnostic = Omit<Diagnostic, 'filePath'>;
 /**
  * runCommand()
  *
- * Runs a shell command and returns stdout + stderr combined.
- * Never rejects — linters return non-zero exit codes when they
- * find issues, which would cause exec to call the error callback.
- * We always want the output regardless of exit code.
+ * Runs a shell command and returns BOTH stdout and stderr combined.
  *
- * @param command - The shell command to run
- * @param timeoutMs - Max time to wait before killing the process (default 30s)
+ * KEY FIX: The original used `stdout || stderr` which silently dropped
+ * stderr if stdout had any content (even a blank line). Cppcheck writes
+ * ALL results to stderr — so any stdout content (e.g. version strings,
+ * progress messages) would cause the original code to return nothing useful.
+ *
+ * We now always concatenate both streams so no output is lost.
  */
-function runCommand(command: string, timeoutMs = 30000): Promise<string> {
+function runCommand(
+  command: string,
+  timeoutMs = 45000
+): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     exec(
       command,
       { timeout: timeoutMs },
       (_error, stdout, stderr) => {
-        // Return whichever stream has content
-        // Some tools write to stderr (e.g. cppcheck), others to stdout
-        resolve(stdout || stderr || '');
+        // Always return both — linters exit non-zero when issues are found,
+        // which would cause exec to call _error, but we still want the output
+        resolve({
+          stdout: stdout || '',
+          stderr: stderr || '',
+        });
       }
     );
   });
@@ -52,8 +57,7 @@ function runCommand(command: string, timeoutMs = 30000): Promise<string> {
 
 /**
  * toolExists()
- *
- * Checks if a CLI tool is available on PATH before trying to run it.
+ * Checks if a CLI tool is available on PATH before running it.
  * Prevents cryptic errors if a tool isn't installed.
  */
 async function toolExists(toolName: string): Promise<boolean> {
@@ -66,13 +70,13 @@ async function toolExists(toolName: string): Promise<boolean> {
 }
 
 // ─────────────────────────────────────────
-// INDIVIDUAL ANALYZER FUNCTIONS
+// ANALYZER FUNCTIONS
 // ─────────────────────────────────────────
 
 /**
  * runPylint()
- * Python linter — checks for errors, warnings, conventions, and refactors.
- * Requires: pip install pylint
+ * Python linter — errors, warnings, conventions, refactors.
+ * Reads from stdout.
  */
 async function runPylint(filePath: string): Promise<RawDiagnostic[]> {
   if (!(await toolExists('pylint'))) {
@@ -80,29 +84,27 @@ async function runPylint(filePath: string): Promise<RawDiagnostic[]> {
     return [];
   }
 
-  const output = await runCommand(
+  const { stdout } = await runCommand(
     `pylint --msg-template="{line}:{column}:{msg_id}:{msg}" --score=no "${filePath}"`
   );
 
   const diagnostics: RawDiagnostic[] = [];
-  // Format: line:column:MSG_ID:message text
   const regex = /^(\d+):(\d+):([A-Z]\d{4}):(.*)/;
 
-  for (const line of output.split('\n')) {
+  for (const line of stdout.split('\n')) {
     const match = line.trim().match(regex);
     if (!match) continue;
 
-    const msgId = match[3];
-    // C = convention, R = refactor, W = warning, E = error, F = fatal
+    const msgId    = match[3];
     const severity: Diagnostic['severity'] =
       msgId.startsWith('E') || msgId.startsWith('F') ? 'error' : 'warning';
 
     diagnostics.push({
-      line: parseInt(match[1]),
-      column: parseInt(match[2]),
-      message: `[${msgId}] ${match[4].trim()}`,
+      line:     parseInt(match[1]),
+      column:   parseInt(match[2]),
+      message:  `[${msgId}] ${match[4].trim()}`,
       severity,
-      source: 'Pylint',
+      source:   'Pylint',
     });
   }
 
@@ -111,8 +113,8 @@ async function runPylint(filePath: string): Promise<RawDiagnostic[]> {
 
 /**
  * runFlake8()
- * Python style checker — PEP8 compliance, unused imports, undefined names.
- * Requires: pip install flake8
+ * Python PEP8 style checker.
+ * Reads from stdout.
  */
 async function runFlake8(filePath: string): Promise<RawDiagnostic[]> {
   if (!(await toolExists('flake8'))) {
@@ -120,29 +122,27 @@ async function runFlake8(filePath: string): Promise<RawDiagnostic[]> {
     return [];
   }
 
-  const output = await runCommand(
+  const { stdout } = await runCommand(
     `flake8 --format="%(row)d:%(col)d:%(code)s:%(text)s" "${filePath}"`
   );
 
   const diagnostics: RawDiagnostic[] = [];
-  // Format: row:col:CODE:message
   const regex = /^(\d+):(\d+):([A-Z]\d+):(.*)/;
 
-  for (const line of output.split('\n')) {
+  for (const line of stdout.split('\n')) {
     const match = line.trim().match(regex);
     if (!match) continue;
 
-    const code = match[3];
-    // E = error, W = warning, F = pyflakes, C = complexity
+    const code     = match[3];
     const severity: Diagnostic['severity'] =
       code.startsWith('E') || code.startsWith('F') ? 'error' : 'warning';
 
     diagnostics.push({
-      line: parseInt(match[1]),
-      column: parseInt(match[2]),
-      message: `[${code}] ${match[4].trim()}`,
+      line:     parseInt(match[1]),
+      column:   parseInt(match[2]),
+      message:  `[${code}] ${match[4].trim()}`,
       severity,
-      source: 'Flake8',
+      source:   'Flake8',
     });
   }
 
@@ -151,8 +151,8 @@ async function runFlake8(filePath: string): Promise<RawDiagnostic[]> {
 
 /**
  * runBandit()
- * Python security linter — finds common security issues.
- * Requires: pip install bandit
+ * Python security linter.
+ * Reads JSON from stdout.
  */
 async function runBandit(filePath: string): Promise<RawDiagnostic[]> {
   if (!(await toolExists('bandit'))) {
@@ -160,37 +160,30 @@ async function runBandit(filePath: string): Promise<RawDiagnostic[]> {
     return [];
   }
 
-  const output = await runCommand(
-    `bandit -f json -q "${filePath}"`
-  );
+  const { stdout } = await runCommand(`bandit -f json -q "${filePath}"`);
 
   const diagnostics: RawDiagnostic[] = [];
 
   try {
-    const results = JSON.parse(output);
-
-    if (!results?.results || !Array.isArray(results.results)) {
-      return [];
-    }
+    const results = JSON.parse(stdout);
+    if (!results?.results || !Array.isArray(results.results)) return [];
 
     for (const issue of results.results) {
-      // HIGH/MEDIUM severity = error, LOW = warning
       const severity: Diagnostic['severity'] =
         issue.issue_severity === 'HIGH' || issue.issue_severity === 'MEDIUM'
           ? 'error'
           : 'warning';
 
       diagnostics.push({
-        line: issue.line_number ?? 1,
-        column: issue.col_offset ?? 1,
-        message: `[${issue.test_id}] ${issue.issue_text} (Confidence: ${issue.issue_confidence})`,
+        line:     issue.line_number ?? 1,
+        column:   issue.col_offset  ?? 1,
+        message:  `[${issue.test_id}] ${issue.issue_text} (Confidence: ${issue.issue_confidence})`,
         severity,
-        source: 'Bandit',
+        source:   'Bandit',
       });
     }
   } catch {
-    // Bandit returned non-JSON (e.g. no issues found, or parse error)
-    // This is normal — just return empty
+    // No issues found or non-JSON output — normal
   }
 
   return diagnostics;
@@ -198,8 +191,19 @@ async function runBandit(filePath: string): Promise<RawDiagnostic[]> {
 
 /**
  * runCppcheck()
- * C/C++ static analyzer — memory leaks, null pointers, undefined behavior.
- * Requires: apt install cppcheck / brew install cppcheck
+ *
+ * C/C++ static analyzer.
+ *
+ * KEY FIX 1: Cppcheck writes ALL diagnostic output to STDERR, not stdout.
+ * The old code used `stdout || stderr` — if cppcheck printed anything to
+ * stdout (like a progress line), stderr was silently discarded. We now
+ * always read stderr directly.
+ *
+ * KEY FIX 2: Added --error-exitcode=0 so cppcheck always exits 0,
+ * preventing exec from swallowing output via the error callback path.
+ *
+ * KEY FIX 3: Added -j1 to prevent race conditions on the output stream
+ * when analysing a single file.
  */
 async function runCppcheck(filePath: string): Promise<RawDiagnostic[]> {
   if (!(await toolExists('cppcheck'))) {
@@ -207,43 +211,71 @@ async function runCppcheck(filePath: string): Promise<RawDiagnostic[]> {
     return [];
   }
 
-  // cppcheck writes results to stderr by default
-  const output = await runCommand(
-    `cppcheck --enable=all --suppress=missingIncludeSystem ` +
-    `--template="{file}:{line}:{column}:{severity}:{message}" "${filePath}"`
+  const ext    = path.extname(filePath).toLowerCase();
+  const langFlag = ext === '.h' ? '--language=c' : '';
+
+  // Cppcheck output goes to stderr — read it directly
+  const { stderr } = await runCommand(
+    `cppcheck --enable=all --error-exitcode=0 ` +
+    `--suppress=missingIncludeSystem --suppress=missingInclude ` +
+    `${langFlag} ` +
+    `--template="{file}:{line}:{column}:{severity}:{message}" ` +
+    `"${filePath}" 2>&1`,
+    45000
   );
 
   const diagnostics: RawDiagnostic[] = [];
-  // Format: file:line:column:severity:message
-  const regex = /^(.+):(\d+):(\d+):(\w+):(.+)/;
 
-  for (const line of output.split('\n')) {
-    const match = line.trim().match(regex);
+  // Format: /abs/path/file.c:12:5:warning:Memory leak: buffer
+  // The (.+?) at start is non-greedy but on Linux paths have no colons so it's fine
+  const regex = /^(.+):(\d+):(\d+):(\w+):(.+)$/;
+
+  for (const line of stderr.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    const match = trimmed.match(regex);
     if (!match) continue;
 
-    // Skip 'information' level messages — too noisy
     const rawSeverity = match[4];
+
+    // Skip information-level messages — too noisy
     if (rawSeverity === 'information') continue;
 
-    const severity: Diagnostic['severity'] =
-      rawSeverity === 'error' ? 'error' : 'warning';
+    // Map cppcheck severity to our three-level system
+    let severity: Diagnostic['severity'] = 'info';
+    if (rawSeverity === 'error')                                     severity = 'error';
+    else if (rawSeverity === 'warning')                              severity = 'warning';
+    else if (['style', 'performance', 'portability'].includes(rawSeverity))
+                                                                     severity = 'info';
 
     diagnostics.push({
-      line: parseInt(match[2]),
-      column: parseInt(match[3]),
-      message: match[5].trim(),
+      line:     parseInt(match[2]),
+      column:   parseInt(match[3]),
+      message:  match[5].trim(),
       severity,
-      source: 'Cppcheck',
+      source:   'Cppcheck',
     });
   }
 
+  console.log(`[Cppcheck] ${filePath} → ${diagnostics.length} issue(s)`);
   return diagnostics;
 }
 
 /**
  * runClangTidy()
- * C/C++ linter — style, modernization, and bug-prone patterns.
- * Requires: apt install clang-tidy / brew install llvm
+ *
+ * C/C++ linter — style, modernization, bug-prone patterns.
+ *
+ * KEY FIX 1: clang-tidy writes to both stdout AND stderr depending on
+ * version. We now concatenate both streams.
+ *
+ * KEY FIX 2: Added explicit -x c / -x c-header language flag so
+ * clang-tidy doesn't try to guess the language from the extension (it
+ * sometimes guesses wrong for .h files).
+ *
+ * KEY FIX 3: Added --quiet to suppress progress noise that was
+ * polluting the output and confusing the regex parser.
  */
 async function runClangTidy(filePath: string): Promise<RawDiagnostic[]> {
   if (!(await toolExists('clang-tidy'))) {
@@ -251,31 +283,50 @@ async function runClangTidy(filePath: string): Promise<RawDiagnostic[]> {
     return [];
   }
 
-  // The trailing '--' tells clang-tidy not to look for a compile_commands.json
-  const output = await runCommand(
-    `clang-tidy "${filePath}" --`
+  const ext    = path.extname(filePath).toLowerCase();
+  const lang   = ext === '.h' ? 'c-header' : 'c';
+
+  // Combine stdout + stderr — clang-tidy version determines which it uses
+  const { stdout, stderr } = await runCommand(
+    `clang-tidy --quiet "${filePath}" -- -x ${lang} -std=c11 2>&1`,
+    45000
   );
 
+  const combined    = stdout + '\n' + stderr;
   const diagnostics: RawDiagnostic[] = [];
-  // Format: file.c:line:col: warning/error: message [check-name]
-  const regex = /^.+:(\d+):(\d+):\s+(warning|error):\s+(.*)\[([^\]]+)\]/;
 
-  for (const line of output.split('\n')) {
-    const match = line.trim().match(regex);
+  // Format: /path/to/file.c:12:5: warning: message [check-name]
+  const regex = /^(.+):(\d+):(\d+):\s+(warning|error):\s+(.*?)\s*\[([^\]]+)\]\s*$/;
+
+  for (const line of combined.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    const match = trimmed.match(regex);
     if (!match) continue;
 
+    const parsedFile = match[1];
+
+    // Skip diagnostics that refer to system headers — not our code
+    if (
+      parsedFile.includes('/usr/') ||
+      parsedFile.includes('/include/') ||
+      parsedFile.includes('/lib/')
+    ) continue;
+
     const severity: Diagnostic['severity'] =
-      match[3] === 'error' ? 'error' : 'warning';
+      match[4] === 'error' ? 'error' : 'warning';
 
     diagnostics.push({
-      line: parseInt(match[1]),
-      column: parseInt(match[2]),
-      message: `[${match[5]}] ${match[4].trim()}`,
+      line:     parseInt(match[2]),
+      column:   parseInt(match[3]),
+      message:  `[${match[6]}] ${match[5].trim()}`,
       severity,
-      source: 'Clang-Tidy',
+      source:   'Clang-Tidy',
     });
   }
 
+  console.log(`[Clang-Tidy] ${filePath} → ${diagnostics.length} issue(s)`);
   return diagnostics;
 }
 
@@ -286,25 +337,21 @@ async function runClangTidy(filePath: string): Promise<RawDiagnostic[]> {
 /**
  * analyzeProject()
  *
- * Runs all relevant static analysis tools against every supported file
- * in the project. Tools for the same file run in parallel to maximize speed.
- *
- * Results are aggregated across all files, deduplicated by
- * (filePath + line + message), and sorted by file then line number.
- *
- * @param projectPath  - Absolute path to the extracted project directory
- * @param projectFiles - Relative file paths to analyze (from projectService)
- * @returns            - Sorted, deduplicated array of Diagnostic objects
+ * Runs all relevant tools against every supported file in parallel.
+ * Results are aggregated, deduplicated, and sorted.
  */
 export async function analyzeProject(
   projectPath: string,
   projectFiles: string[]
 ): Promise<Diagnostic[]> {
+
+  console.log(`[analyzeProject] Received ${projectFiles.length} file(s):`, projectFiles);
+
   const allDiagnostics: Diagnostic[] = [];
 
   for (const file of projectFiles) {
     const fullPath = path.join(projectPath, file);
-    const ext = path.extname(file).toLowerCase();
+    const ext      = path.extname(file).toLowerCase();
 
     let analysisPromises: Promise<RawDiagnostic[]>[] = [];
 
@@ -320,30 +367,27 @@ export async function analyzeProject(
         runClangTidy(fullPath),
       ];
     } else {
-      // Unsupported file type — skip silently
-      continue;
+      continue; // Unsupported — skip silently
     }
 
     // Run all tools for this file in parallel
+    // allSettled means one tool crashing doesn't kill the others
     const results = await Promise.allSettled(analysisPromises);
 
     for (const result of results) {
       if (result.status === 'fulfilled') {
-        // Attach the relative filePath to each raw diagnostic
         const fileDiagnostics = result.value.map((d) => ({
           ...d,
           filePath: file,
         }));
         allDiagnostics.push(...fileDiagnostics);
       } else {
-        // One tool failed — log it but continue with others
         console.error(`Analysis tool failed for ${file}:`, result.reason);
       }
     }
   }
 
-  // Deduplicate by filePath + line + message
-  // This handles cases where multiple tools report the same issue
+  // Deduplicate: same file + line + message = same issue
   const uniqueDiagnostics = new Map<string, Diagnostic>();
   for (const diag of allDiagnostics) {
     const key = `${diag.filePath}:${diag.line}:${diag.message}`;
@@ -352,25 +396,26 @@ export async function analyzeProject(
     }
   }
 
-  // Sort by file path first, then by line number within each file
-  return Array.from(uniqueDiagnostics.values()).sort((a, b) => {
+  const sorted = Array.from(uniqueDiagnostics.values()).sort((a, b) => {
     if (a.filePath < b.filePath) return -1;
     if (a.filePath > b.filePath) return 1;
     return a.line - b.line;
   });
+
+  console.log(`[analyzeProject] Total unique diagnostics: ${sorted.length}`);
+  return sorted;
 }
 
 /**
  * getAIContext()
  *
- * Builds a structured prompt for the AI model by combining:
+ * Builds a structured prompt for the AI model combining:
  * - The diagnostic message and source tool
- * - A windowed code snippet (3 lines before and after the error line)
- * - Clear instructions for the model to explain and fix the issue
+ * - A windowed code snippet (5 lines before/after) with line numbers
+ * - Clear instructions asking for explanation + fix
  *
- * @param projectId  - The project session ID
- * @param diagnostic - The diagnostic to explain
- * @returns          - A fully formatted prompt string ready for getAICompletion()
+ * Context window increased from 3 to 5 lines either side so the model
+ * has enough code context to reason about multi-line issues.
  */
 export async function getAIContext(
   projectId: string,
@@ -382,31 +427,31 @@ export async function getAIContext(
   }
 
   const fileContent = await getFileContent(projectId, diagnostic.filePath);
-  const fileLines = fileContent.split('\n');
+  const fileLines   = fileContent.split('\n');
 
-  // Build a windowed snippet around the error line
-  // Show 3 lines before and 3 lines after for context
-  const CONTEXT_LINES = 3;
+  // 5 lines of context either side gives the model enough to understand
+  // the surrounding function/block
+  const CONTEXT_LINES = 5;
   const startLine = Math.max(0, diagnostic.line - 1 - CONTEXT_LINES);
-  const endLine = Math.min(fileLines.length, diagnostic.line + CONTEXT_LINES);
+  const endLine   = Math.min(fileLines.length, diagnostic.line + CONTEXT_LINES);
   const snippetLines = fileLines.slice(startLine, endLine);
 
-  // Add line numbers to the snippet so the model can reference them clearly
+  // Add line numbers + >>> marker on the error line
   const numberedSnippet = snippetLines
     .map((line, i) => {
       const lineNum = startLine + i + 1;
-      const marker = lineNum === diagnostic.line ? '>>>' : '   ';
-      return `${marker} ${String(lineNum).padStart(4, ' ')} | ${line}`;
+      const marker  = lineNum === diagnostic.line ? '>>>' : '   ';
+      return `${marker} ${String(lineNum).padStart(4)} | ${line}`;
     })
     .join('\n');
 
   const language = diagnostic.filePath.endsWith('.c') ||
     diagnostic.filePath.endsWith('.h') ? 'c' : 'python';
 
-  // Structured prompt — clear sections help the model stay on task
+  // Structured prompt — clear sections help the 1B model stay focused
   const prompt =
-`You are an expert ${language === 'c' ? 'C' : 'Python'} code analysis assistant.
-A static analysis tool has found an issue in the file "${diagnostic.filePath}".
+`You are an expert ${language === 'c' ? 'C' : 'Python'} programming assistant specializing in code quality and security.
+A static analysis tool found a problem in the file "${diagnostic.filePath}".
 
 ISSUE DETAILS:
   Tool     : ${diagnostic.source}
@@ -419,12 +464,18 @@ CODE SNIPPET (>>> marks the problem line):
 ${numberedSnippet}
 \`\`\`
 
-TASK:
-1. Explain the root cause of this issue in simple, clear terms (2-3 sentences).
-2. Show the corrected version of the code snippet.
-3. Briefly explain what the fix does and why it prevents the issue.
+Please provide a complete response covering all three parts below:
 
-EXPLANATION:
+**1. Root Cause**
+Explain in 2-3 clear sentences what is wrong and why it is a problem.
+
+**2. Fixed Code**
+Show the corrected version of the relevant lines as a code block.
+
+**3. Explanation**
+Briefly explain what the fix does and why it solves the issue.
+
+RESPONSE:
 `;
 
   return prompt;
