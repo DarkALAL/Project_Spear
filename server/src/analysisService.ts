@@ -2,10 +2,11 @@
 import { exec } from 'child_process';
 import { promises as fs } from 'fs';
 import path from 'path';
+import { getFileContent } from './projectService'; // Import from projectService
 
-// --- Updated Diagnostic Interface ---
+// --- Diagnostic Interface ---
 export interface Diagnostic {
-  filePath: string; // REQUIRED: The relative path to the file
+  filePath: string;
   line: number;
   column: number;
   message: string;
@@ -13,38 +14,21 @@ export interface Diagnostic {
   source: string;
 }
 
-// --- Helper function to find all C and Python files in a directory ---
-async function getProjectFiles(dir: string, baseDir: string = dir): Promise<string[]> {
-  const entries = await fs.readdir(dir, { withFileTypes: true });
-  const files = await Promise.all(
-    entries.map(async (entry) => {
-      const fullPath = path.join(dir, entry.name);
-      const relativePath = path.relative(baseDir, fullPath);
-      if (entry.isDirectory()) {
-        return getProjectFiles(fullPath, baseDir);
-      }
-      if (entry.name.endsWith('.c') || entry.name.endsWith('.py')) {
-        return [relativePath];
-      }
-      return [];
-    })
-  );
-  return files.flat();
-}
+// --- Helper function to find project files ---
+// This is now imported from projectService, but if you need it here for some reason, it would go here.
+// For now, we assume projectService is the source of truth for file listings.
 
 // --- Helper function to run any command ---
 function runCommand(command: string): Promise<string> {
   return new Promise((resolve) => {
     exec(command, (error, stdout, stderr) => {
-      // Many tools output to stderr by default. We resolve with the output regardless of exit code.
       resolve(stdout || stderr);
     });
   });
 }
 
-
-// --- Individual Analyzer Functions (largely unchanged, they still operate on a single file path) ---
-// Note: They no longer need to add the filePath property themselves.
+// --- Individual Analyzer Functions ---
+// (These functions remain unchanged from your provided code)
 async function runPylint(filePath: string): Promise<Omit<Diagnostic, 'filePath'>[]> {
   const output = await runCommand(`pylint --msg-template="{line}:{column}:{msg_id}:{msg}" ${filePath}`);
   const diagnostics: Omit<Diagnostic, 'filePath'>[] = [];
@@ -84,12 +68,10 @@ async function runFlake8(filePath: string): Promise<Omit<Diagnostic, 'filePath'>
 }
 
 async function runBandit(filePath: string): Promise<Omit<Diagnostic, 'filePath'>[]> {
-    // FIX: Removed the '-r' flag. Now it correctly scans a single file.
-    const output = await runCommand(`bandit -f json ${filePath}`); 
+    const output = await runCommand(`bandit -f json ${filePath}`);
     const diagnostics: Omit<Diagnostic, 'filePath'>[] = [];
     try {
         const results = JSON.parse(output);
-        // This part remains the same
         for (const issue of results.results) {
             diagnostics.push({
                 line: issue.line_number,
@@ -123,8 +105,6 @@ async function runCppcheck(filePath: string): Promise<Omit<Diagnostic, 'filePath
 }
 
 async function runClangTidy(filePath: string): Promise<Omit<Diagnostic, 'filePath'>[]> {
-    // Note: Clang-Tidy requires a compilation database for accurate checks on complex projects.
-    // The '--' tells clang-tidy that no more flags are coming and the rest are file names.
     const output = await runCommand(`clang-tidy ${filePath} --`);
     const diagnostics: Omit<Diagnostic, 'filePath'>[] = [];
     const regex = /.+:(\d+):(\d+):\s+(warning|error):\s+(.*)\[(.*)\]/;
@@ -143,12 +123,13 @@ async function runClangTidy(filePath: string): Promise<Omit<Diagnostic, 'filePat
     return diagnostics;
 }
 
-// --- NEW Main Project Analysis Function ---
-export async function analyzeProject(projectPath: string): Promise<Diagnostic[]> {
-  const files = await getProjectFiles(projectPath);
+
+// --- Main Project Static Analysis Function ---
+// This function does NOT change. It remains the source of truth for static analysis.
+export async function analyzeProject(projectPath: string, projectFiles: string[]): Promise<Diagnostic[]> {
   let allDiagnostics: Diagnostic[] = [];
 
-  for (const file of files) {
+  for (const file of projectFiles) {
     const fullPath = path.join(projectPath, file);
     let analysisPromises: Promise<Omit<Diagnostic, 'filePath'>[]>[] = [];
 
@@ -160,13 +141,11 @@ export async function analyzeProject(projectPath: string): Promise<Diagnostic[]>
 
     if (analysisPromises.length > 0) {
         const results = await Promise.all(analysisPromises);
-        // Add the relative filePath to each diagnostic and flatten the array
         const fileDiagnostics = results.flat().map(d => ({ ...d, filePath: file }));
         allDiagnostics.push(...fileDiagnostics);
     }
   }
 
-  // Deduplicate diagnostics based on file, line, and message
   const uniqueDiagnostics = new Map<string, Diagnostic>();
   for (const diag of allDiagnostics) {
     const key = `${diag.filePath}:${diag.line}:${diag.message}`;
@@ -175,10 +154,47 @@ export async function analyzeProject(projectPath: string): Promise<Diagnostic[]>
     }
   }
   
-  // Sort by file path first, then by line number for a clean report
   return Array.from(uniqueDiagnostics.values()).sort((a,b) => {
     if (a.filePath < b.filePath) return -1;
     if (a.filePath > b.filePath) return 1;
     return a.line - b.line;
   });
+}
+
+
+// --- NEW FUNCTION for Milestone 5: Generate AI Prompts ---
+export async function getAIContext(
+  projectId: string, 
+  diagnostic: Diagnostic // Use the full Diagnostic type
+): Promise<string> {
+  
+  const fileContent = await getFileContent(projectId, diagnostic.filePath);
+  const fileLines = fileContent.split('\n');
+  
+  // Get a snippet of code around the error line for context (e.g., 3 lines before, 3 lines after)
+  const startLine = Math.max(0, diagnostic.line - 4);
+  const endLine = Math.min(fileLines.length, diagnostic.line + 3);
+  const codeSnippet = fileLines.slice(startLine, endLine).join('\n');
+
+  // This is "Prompt Engineering". We create a highly structured prompt for the code model.
+  const prompt = `
+// You are an expert code analysis assistant.
+// An error was found in the following code snippet from the file "${diagnostic.filePath}".
+
+// ERROR:
+// ${diagnostic.message} (Reported by: ${diagnostic.source})
+
+// CODE SNIPPET (Error is on line ${diagnostic.line}):
+\`\`\`${diagnostic.filePath.endsWith('.c') ? 'c' : 'python'}
+${codeSnippet}
+\`\`\`
+
+// TASK:
+// 1. Briefly explain the root cause of this specific error in simple terms.
+// 2. Provide the corrected version of the code snippet.
+
+// EXPLANATION:
+`;
+
+  return prompt;
 }

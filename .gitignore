@@ -1,3 +1,4 @@
 ./server/project_uploads
 ./client/node_modules
 server/node_modules
+server/models

@@ -3,8 +3,11 @@ import React, { useState } from 'react';
 import './App.css';
 import CodeEditor from './components/CodeEditor';
 import IssuesPanel from './components/IssuesPanel';
+import AIExplanationModal from './components/AIExplanationModal'; // Re-import the modal
+// Assuming you will create this component for the new tab
+// import DependencyGraph from './components/DependencyGraph'; 
 
-// Interface for diagnostic data
+// --- TYPE DEFINITIONS ---
 interface Diagnostic {
   filePath: string;
   line: number;
@@ -13,11 +16,10 @@ interface Diagnostic {
   severity: 'error' | 'warning' | 'info';
   source: string;
 }
-
-// A type to pass navigation commands to the CodeEditor
 type NavigationTarget = { line: number; column: number };
 
 function App() {
+  // --- STATE MANAGEMENT (Merged) ---
   const [projectId, setProjectId] = useState<string | null>(null);
   const [files, setFiles] = useState<string[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -26,13 +28,22 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [navigateTo, setNavigateTo] = useState<NavigationTarget | null>(null);
   const [uploadedFileName, setUploadedFileName] = useState<string>('');
+  
+  // State for the new tabbed UI
+  const [activeTab, setActiveTab] = useState<'editor' | 'dependencies'>('editor');
+  
+  // State for the AI explanation modal
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [aiExplanation, setAiExplanation] = useState('');
+  const [isAIThinking, setIsAIThinking] = useState(false);
 
+  // --- EVENT HANDLERS ---
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
     setIsLoading(true);
-    setUploadedFileName(file.name); // Store file name for display
+    setUploadedFileName(file.name);
     const formData = new FormData();
     formData.append('project', file);
 
@@ -47,6 +58,7 @@ function App() {
       setSelectedFile(null);
       setFileContent('');
       setDiagnostics([]);
+      setActiveTab('editor'); // Default to editor view on new upload
     } catch (error) {
       console.error('Upload failed:', error);
     } finally {
@@ -75,7 +87,12 @@ function App() {
     setIsLoading(true);
     setDiagnostics([]);
     try {
-      const response = await fetch(`http://localhost:3001/api/project/${projectId}/analyze`, { method: 'POST' });
+      // FIXED: Added headers and body to the fetch call
+      const response = await fetch(`http://localhost:3001/api/project/${projectId}/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files }),
+      });
       const data = await response.json();
       setDiagnostics(data);
     } catch (error) {
@@ -96,45 +113,90 @@ function App() {
     }
   };
 
+  // Re-integrated AI handler
+  const handleAskAI = async (diagnostic: Diagnostic) => {
+    if (!projectId) return;
+    setIsModalOpen(true);
+    setIsAIThinking(true);
+    setAiExplanation('');
+    try {
+      const response = await fetch(`http://localhost:3001/api/project/${projectId}/explain`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ diagnostic }),
+      });
+      const data = await response.json();
+      setAiExplanation(data.explanation);
+    } catch (error) {
+      setAiExplanation('Sorry, the AI assistant failed to respond.');
+    } finally {
+      setIsAIThinking(false);
+    }
+  };
+
   return (
     <div className="App">
       <header className="App-header">
-        <h1>Project Spear: AI Code Analysis</h1>
-        <div className="controls">
-          <input type="file" id="file-upload" accept=".zip" onChange={handleFileUpload} disabled={isLoading} style={{ display: 'none' }} />
-          <label htmlFor="file-upload" className="browse-button">Browse...</label>
-          {uploadedFileName && <span className="file-name">{uploadedFileName}</span>}
-          {projectId && <button onClick={handleAnalyze} disabled={isLoading}>Analyze Project</button>}
+        <div className="header-left">
+          <h1>Project Spear</h1>
+          <div className="top-nav">
+            <button className={`nav-button ${activeTab === 'editor' ? 'active' : ''}`} onClick={() => setActiveTab('editor')}>Editor</button>
+            <button className={`nav-button ${activeTab === 'dependencies' ? 'active' : ''}`} onClick={() => setActiveTab('dependencies')}>Dependencies</button>
+          </div>
         </div>
-        {isLoading && <div className="loader">Processing...</div>}
+        <div className="header-right">
+          <div className="controls">
+            <input type="file" id="file-upload" accept=".zip" onChange={handleFileUpload} disabled={isLoading} style={{ display: 'none' }} />
+            <label htmlFor="file-upload" className="browse-button">Browse...</label>
+            {uploadedFileName && <span className="file-name">{uploadedFileName}</span>}
+            {projectId && <button onClick={handleAnalyze} disabled={isLoading}>Analyze Project</button>}
+          </div>
+        </div>
       </header>
       <main className="main-content">
+        {isLoading && <div className="loader-overlay"><div>Analyzing...</div></div>}
         {projectId ? (
-          <>
-            <div className="file-tree">
-              <h3>Project Files</h3>
-              <ul>
-                {files.map(file => (
-                  <li key={file} onClick={() => handleFileSelect(file)} className={selectedFile === file ? 'selected' : ''}>
-                    {file}
-                  </li>
-                ))}
-              </ul>
-            </div>
-            <div className="editor-container">
-              <CodeEditor 
-                filePath={selectedFile} 
-                content={fileContent} 
-                diagnostics={diagnostics.filter(d => d.filePath === selectedFile)}
-                navigateTo={navigateTo}
+          activeTab === 'editor' ? (
+            <>
+              <div className="file-tree">
+                <h3>Project Files</h3>
+                <ul>
+                  {files.map(file => (
+                    <li key={file} onClick={() => handleFileSelect(file)} className={selectedFile === file ? 'selected' : ''}>
+                      {file}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <div className="editor-container">
+                <CodeEditor 
+                  filePath={selectedFile} 
+                  content={fileContent} 
+                  diagnostics={diagnostics.filter(d => d.filePath === selectedFile)}
+                  navigateTo={navigateTo}
+                />
+              </div>
+              <IssuesPanel 
+                diagnostics={diagnostics} // Show all project diagnostics
+                onIssueClick={handleIssueClick}
+                onAskAI={handleAskAI} // Connect the AI handler
               />
-            </div>
-            <IssuesPanel diagnostics={diagnostics} onIssueClick={handleIssueClick} />
-          </>
+            </>
+          ) : (
+            // <DependencyGraph files={files} /> 
+            <div className="placeholder">Dependency Graph View</div> // Placeholder for your component
+          )
         ) : (
           <div className="placeholder">Please upload a project .zip file to begin.</div>
         )}
       </main>
+      {isModalOpen && (
+        <AIExplanationModal 
+          isLoading={isAIThinking}
+          explanation={aiExplanation}
+          onClose={() => setIsModalOpen(false)}
+        />
+      )}
     </div>
   );
 }
