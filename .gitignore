@@ -7,6 +7,6 @@ client/.env
 server/project_uploads
 server/models/
 client/jest.config.js
-client/src/tsconfig.jest.json
+client/tsconfig.jest.json
 client/src/components/__mocks__
 client/src/components/CodeEditor.test.tsx
